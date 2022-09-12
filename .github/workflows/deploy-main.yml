@@ -1,0 +1,36 @@
+name: Ncuos Rancher Deploy CI
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+
+  build:
+
+    runs-on: [self-hosted]
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build Binary
+        env:
+          CGO_ENABLED: 0
+        run: go build -ldflags "-s -w -extldflags '-static'" -o runner
+
+      - name: Build the Docker image
+        run: docker build . --file Dockerfile --tag harbor.ncuos.com/feishu-git-push-bot/core:latest
+
+      - name: Push
+        run: docker push harbor.ncuos.com/feishu-git-push-bot/core:latest
+
+      - name: Redeploy
+        uses: ncuhome/rancher-workloads-redeploy-action@v1.2
+        env:
+          API_ACCESS_ADDR: https://rancher.ncuos.com/v3/
+          CLUSTER: local
+          PROJECT: p-qld78
+          NAMESPACE: feishu-git-push-bot
+          WORKLOAD: core
+          RANCHER_TOKEN: "token-wzrl7:${{ secrets.rancher_key }}"
