@@ -74,7 +74,7 @@ func Event(c *gin.Context) {
 		var content string
 		for index, commit := range f.Commits {
 			if index != 0 {
-				content = "\n" + content
+				content += "\n"
 			}
 			content += fmt.Sprintf(
 				"%s %s - %s",
