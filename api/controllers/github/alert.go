@@ -105,7 +105,7 @@ func Event(c *gin.Context) {
 				genUrlButton("查看", f.Repository.HtmlUrl),
 			},
 		})
-	case "issue":
+	case "issues":
 		var f githubCall.IssueEvent
 		if e := json.NewDecoder(body).Decode(&f); e != nil {
 			callback.Error(c, 8, e)
