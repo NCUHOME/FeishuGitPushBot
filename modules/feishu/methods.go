@@ -8,3 +8,15 @@ func SendText(text string) error {
 		},
 	})
 }
+
+func SendPostText(title string, contents []ReqSendPostTextContent) error {
+	return Do(&ReqBase{
+		MsgType: "post",
+		Content: map[string]interface{}{
+			"zh_cn": map[string]interface{}{
+				"title":   title,
+				"content": contents,
+			},
+		},
+	})
+}
