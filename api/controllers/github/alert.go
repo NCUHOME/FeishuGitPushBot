@@ -52,7 +52,7 @@ func Event(c *gin.Context) {
 				},
 			},
 			Elements: []interface{}{
-				genMadeByElements(f.Repository.Name, strings.Split(f.Ref, "/")[2], f.Sender.Login),
+				genMadeByElements(f.Repository.Name, strings.Join(strings.Split(f.Ref, "/")[2:], "/"), f.Sender.Login),
 				feishu.CardMsgContentElement{
 					Tag: "div",
 					Fields: []feishu.CardMsgElementField{
