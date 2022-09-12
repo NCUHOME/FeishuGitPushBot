@@ -201,8 +201,8 @@ func Event(c *gin.Context) {
 						Fields: []feishu.CardMsgElementField{
 							{
 								Text: feishu.CardMsgElementText{
-									Tag:     "plain_text",
-									Content: f.Issue.Title,
+									Tag:     "lark_md",
+									Content: fmt.Sprintf("**标题**\n%s", f.Issue.Title),
 								},
 							},
 						},
