@@ -24,3 +24,10 @@ func SendPostText(title string, contents []ReqSendPostTextContent) error {
 		},
 	})
 }
+
+func SendCardMsg(conf *ReqCardMsg) error {
+	return Do(&ReqBase{
+		MsgType: "interactive",
+		Card:    conf,
+	})
+}
