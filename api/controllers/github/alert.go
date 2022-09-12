@@ -213,6 +213,36 @@ func Event(c *gin.Context) {
 		default:
 			callback.Error(c, 10, nil)
 		}
+	case "issue_comment":
+		var f githubCall.IssueCommentEvent
+		if e := json.NewDecoder(body).Decode(&f); e != nil {
+			callback.Error(c, 8, e)
+			return
+		}
+
+		sendMsg(&feishu.ReqCardMsg{
+			Header: &feishu.CardMsgHeader{
+				Title: feishu.CardMsgElementText{
+					Tag:     "plain_text",
+					Content: fmt.Sprintf("🥜 Issue comment %s", f.Action),
+				},
+			},
+			Elements: []interface{}{
+				genMadeByElements(f.Repository.Name, "", f.Sender.Login),
+				feishu.CardMsgContentElement{
+					Tag: "div",
+					Fields: []feishu.CardMsgElementField{
+						{
+							Text: feishu.CardMsgElementText{
+								Tag:     "lark_md",
+								Content: fmt.Sprintf("**内容**\n%s", f.Comment.Body),
+							},
+						},
+					},
+				},
+				genUrlButton("查看", f.Comment.HtmlUrl),
+			},
+		})
 	default:
 		callback.Error(c, 10, nil)
 		return
