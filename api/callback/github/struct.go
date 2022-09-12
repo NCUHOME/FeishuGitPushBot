@@ -143,3 +143,18 @@ type SenderInfo struct {
 	Type              string `json:"type" form:"type"`
 	SiteAdmin         bool   `json:"site_admin" form:"site_admin"`
 }
+
+type OrganizationInfo struct {
+	Login            string      `json:"login" form:"login"`
+	Id               int         `json:"id" form:"id"`
+	NodeId           string      `json:"node_id" form:"node_id"`
+	Url              string      `json:"url" form:"url"`
+	ReposUrl         string      `json:"repos_url" form:"repos_url"`
+	EventsUrl        string      `json:"events_url" form:"events_url"`
+	HooksUrl         string      `json:"hooks_url" form:"hooks_url"`
+	IssuesUrl        string      `json:"issues_url" form:"issues_url"`
+	MembersUrl       string      `json:"members_url" form:"members_url"`
+	PublicMembersUrl string      `json:"public_members_url" form:"public_members_url"`
+	AvatarUrl        string      `json:"avatar_url" form:"avatar_url"`
+	Description      interface{} `json:"description" form:"description"`
+}

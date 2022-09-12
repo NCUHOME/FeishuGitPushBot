@@ -8,53 +8,8 @@ import (
 	"github.com/ncuhome/FeishuGitPushBot/api/callback"
 	githubCall "github.com/ncuhome/FeishuGitPushBot/api/callback/github"
 	"github.com/ncuhome/FeishuGitPushBot/modules/feishu"
-	log "github.com/sirupsen/logrus"
 	"strings"
 )
-
-func genMadeByElements(repo, content, author string) *feishu.CardMsgContentElement {
-	return &feishu.CardMsgContentElement{
-		Tag: "div",
-		Fields: []feishu.CardMsgElementField{
-			{
-				IsShort: true,
-				Text: feishu.CardMsgElementText{
-					Tag:     "lark_md",
-					Content: fmt.Sprintf("**目标**\n%s : %s", repo, content),
-				},
-			},
-			{
-				IsShort: true,
-				Text: feishu.CardMsgElementText{
-					Tag:     "lark_md",
-					Content: fmt.Sprintf("**创建人**\n%s", author),
-				},
-			},
-		},
-	}
-}
-
-func genUrlButton(content, url string) *feishu.CardMsgActionElement {
-	return &feishu.CardMsgActionElement{
-		Tag: "action",
-		Actions: []feishu.CardMsgElementButton{
-			{
-				Tag: "button",
-				Text: feishu.CardMsgElementText{
-					Tag:     "plain_text",
-					Content: content,
-				},
-				Url: url,
-			},
-		},
-	}
-}
-
-func sendMsg(conf *feishu.ReqCardMsg) {
-	if e := feishu.SendCardMsg(conf); e != nil {
-		log.Errorf("发送消息失败：%v\n", e)
-	}
-}
 
 func Event(c *gin.Context) {
 	i, _ := c.Get("body")
@@ -128,7 +83,7 @@ func Event(c *gin.Context) {
 			},
 			Elements: []interface{}{
 				genMadeByElements(f.Repository.Name, f.Ref, f.Sender.Login),
-				genUrlButton("查看", f.Repository.Url),
+				genUrlButton("查看", f.Repository.HtmlUrl),
 			},
 		})
 	case "delete":
@@ -147,9 +102,115 @@ func Event(c *gin.Context) {
 			},
 			Elements: []interface{}{
 				genMadeByElements(f.Repository.Name, f.Ref, f.Sender.Login),
-				genUrlButton("查看", f.Repository.Url),
+				genUrlButton("查看", f.Repository.HtmlUrl),
 			},
 		})
+	case "issue":
+		var f githubCall.IssueEvent
+		if e := json.NewDecoder(body).Decode(&f); e != nil {
+			callback.Error(c, 8, e)
+			return
+		}
+
+		switch f.Action {
+		case "opened":
+			sendMsg(&feishu.ReqCardMsg{
+				Header: &feishu.CardMsgHeader{
+					Title: feishu.CardMsgElementText{
+						Tag:     "plain_text",
+						Content: "🍄 New Issue",
+					},
+				},
+				Elements: []interface{}{
+					genMadeByElements(f.Repository.Name, "", f.Sender.Login),
+					feishu.CardMsgContentElement{
+						Tag: "div",
+						Fields: []feishu.CardMsgElementField{
+							{
+								Text: feishu.CardMsgElementText{
+									Tag:     "lark_md",
+									Content: fmt.Sprintf("**%s**\n%s", f.Issue.Title, f.Issue.Body),
+								},
+							},
+						},
+					},
+					genUrlButton("查看", f.Issue.HtmlUrl),
+				},
+			})
+		case "edited":
+			var els = []interface{}{
+				genMadeByElements(f.Repository.Name, "", f.Sender.Login),
+			}
+			if f.Changes.Title.From != f.Issue.Title {
+				els = append(els, feishu.CardMsgContentElement{
+					Tag: "div",
+					Fields: []feishu.CardMsgElementField{
+						{
+							IsShort: true,
+							Text: feishu.CardMsgElementText{
+								Tag:     "lark_md",
+								Content: fmt.Sprintf("**原标题**\n%s", f.Changes.Title.From),
+							},
+						},
+						{
+							IsShort: true,
+							Text: feishu.CardMsgElementText{
+								Tag:     "lark_md",
+								Content: fmt.Sprintf("**新标题**\n%s", f.Issue.Title),
+							},
+						},
+					},
+				})
+			}
+			if f.Changes.Body.From != f.Issue.Body {
+				els = append(els, feishu.CardMsgContentElement{
+					Tag: "div",
+					Fields: []feishu.CardMsgElementField{
+						{
+							Text: feishu.CardMsgElementText{
+								Tag:     "lark_md",
+								Content: fmt.Sprintf("**内容已变更**\n%s", f.Issue.Body),
+							},
+						},
+					},
+				})
+			}
+			sendMsg(&feishu.ReqCardMsg{
+				Header: &feishu.CardMsgHeader{
+					Title: feishu.CardMsgElementText{
+						Tag:     "plain_text",
+						Content: "🍄 Issue edited",
+					},
+				},
+				Elements: append(els, genUrlButton("查看", f.Issue.HtmlUrl)),
+			})
+		case "closed":
+			sendMsg(&feishu.ReqCardMsg{
+				Header: &feishu.CardMsgHeader{
+					Title: feishu.CardMsgElementText{
+						Tag:     "plain_text",
+						Content: "🍄 Issue closed",
+					},
+				},
+				Elements: []interface{}{
+					genMadeByElements(f.Repository.Name, "", f.Sender.Login),
+					feishu.CardMsgContentElement{
+						Tag: "div",
+						Fields: []feishu.CardMsgElementField{
+							{
+								Text: feishu.CardMsgElementText{
+									Tag:     "plain_text",
+									Content: f.Issue.Title,
+								},
+							},
+						},
+					},
+					genUrlButton("查看", f.Issue.HtmlUrl),
+				},
+			})
+		default:
+			callback.Error(c, 10, nil)
+		}
 	default:
 		callback.Error(c, 10, nil)
 		return
