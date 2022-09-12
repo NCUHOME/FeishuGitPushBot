@@ -13,9 +13,13 @@ func SendPostText(title string, contents []ReqSendPostTextContent) error {
 	return Do(&ReqBase{
 		MsgType: "post",
 		Content: map[string]interface{}{
-			"zh_cn": map[string]interface{}{
-				"title":   title,
-				"content": contents,
+			"post": map[string]interface{}{
+				"zh_cn": map[string]interface{}{
+					"title": title,
+					"content": []interface{}{
+						contents,
+					},
+				},
 			},
 		},
 	})
