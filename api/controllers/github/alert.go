@@ -54,7 +54,7 @@ func Event(c *gin.Context) {
 		var content string
 		for _, commit := range f.Commits {
 			content += fmt.Sprintf(
-				"\n%s - %s",
+				"%s - %s\n",
 				commit.Message,
 				commit.Committer.Name,
 			)
