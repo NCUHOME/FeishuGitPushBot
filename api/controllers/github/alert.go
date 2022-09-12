@@ -184,12 +184,14 @@ func Event(c *gin.Context) {
 				},
 				Elements: append(els, genUrlButton("查看", f.Issue.HtmlUrl)),
 			})
+		case "reopened":
+			fallthrough
 		case "closed":
 			sendMsg(&feishu.ReqCardMsg{
 				Header: &feishu.CardMsgHeader{
 					Title: feishu.CardMsgElementText{
 						Tag:     "plain_text",
-						Content: "🍄 Issue closed",
+						Content: fmt.Sprintf("🍄 Issue %s", f.Action),
 					},
 				},
 				Elements: []interface{}{

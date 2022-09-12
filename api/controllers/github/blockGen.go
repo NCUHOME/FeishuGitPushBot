@@ -22,7 +22,7 @@ func genMadeByElements(repo, content, author string) *feishu.CardMsgContentEleme
 					Tag: "lark_md",
 					Content: func() string {
 						if content != "" {
-							return fmt.Sprintf("**目标**\n%s | %s", repo, content)
+							return fmt.Sprintf("**目标**\n%s : %s", repo, content)
 						}
 						return fmt.Sprintf("**目标**\n%s", repo)
 					}(),
