@@ -223,3 +223,12 @@ type IssueInfo struct {
 	PerformedViaGithubApp interface{}   `json:"performed_via_github_app" form:"performed_via_github_app"`
 	StateReason           interface{}   `json:"state_reason" form:"state_reason"`
 }
+
+type ChangeInfo struct {
+	Body struct {
+		From string `json:"from" form:"from"`
+	} `json:"body" form:"body"`
+	Title struct {
+		From string `json:"from" form:"from"`
+	} `json:"title" form:"title"`
+}
