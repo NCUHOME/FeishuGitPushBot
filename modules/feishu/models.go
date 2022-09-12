@@ -31,9 +31,9 @@ type ReqCardMsg struct {
 // CardMsgContentElement https://open.feishu.cn/document/ukTMukTMukTM/uMjNwUjLzYDM14yM2ATN
 type CardMsgContentElement struct {
 	Tag    string                `json:"tag"`
-	Text   CardMsgElementText    `json:"text"`
+	Text   *CardMsgElementText   `json:"text,omitempty"`
 	Fields []CardMsgElementField `json:"fields,omitempty"`
-	Extra  interface{}
+	Extra  interface{}           `json:"extra,omitempty"`
 }
 
 // CardMsgDividerElement https://open.feishu.cn/document/ukTMukTMukTM/uQjNwUjL0YDM14CN2ATN

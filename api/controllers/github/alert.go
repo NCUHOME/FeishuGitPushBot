@@ -20,14 +20,14 @@ func genMadeByElements(repo, content, author string) *feishu.CardMsgContentEleme
 				IsShort: true,
 				Text: feishu.CardMsgElementText{
 					Tag:     "lark_md",
-					Content: fmt.Sprintf("**目标**\\n%s:%s", repo, content),
+					Content: fmt.Sprintf("**目标**\n%s:%s", repo, content),
 				},
 			},
 			{
 				IsShort: true,
 				Text: feishu.CardMsgElementText{
 					Tag:     "lark_md",
-					Content: fmt.Sprintf("**创建人**\\n%s", author),
+					Content: fmt.Sprintf("**创建人**\n%s", author),
 				},
 			},
 		},
@@ -72,9 +72,18 @@ func Event(c *gin.Context) {
 		}
 
 		var content string
-		for _, commit := range f.Commits {
+		for index, commit := range f.Commits {
+			if index != 0 {
+				content = "\n" + content
+			}
 			content += fmt.Sprintf(
-				"+ %s - %s\n",
+				"%s %s - %s",
+				func() string {
+					if index%2 == 0 {
+						return "🔹"
+					}
+					return "🔸"
+				}(),
 				commit.Message,
 				commit.Committer.Name,
 			)
@@ -89,9 +98,16 @@ func Event(c *gin.Context) {
 			},
 			Elements: []interface{}{
 				genMadeByElements(f.Repository.Name, strings.Split(f.Ref, "/")[2], f.Sender.Login),
-				feishu.CardMsgElementText{
-					Tag:     "lark_md",
-					Content: content,
+				feishu.CardMsgContentElement{
+					Tag: "div",
+					Fields: []feishu.CardMsgElementField{
+						{
+							Text: feishu.CardMsgElementText{
+								Tag:     "lark_md",
+								Content: content,
+							},
+						},
+					},
 				},
 				genUrlButton("查看", f.HeadCommit.Url),
 			},
