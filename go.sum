@@ -1,7 +1,7 @@
 github.com/Mmx233/EnvConfig v0.0.2 h1:u6GNM7rED9Knmhe2QAnEeUorSW5PmKC8KzAK+03WPow=
 github.com/Mmx233/EnvConfig v0.0.2/go.mod h1:BS1qukaUFWqAGzWzMhhAUuPCi7A8KHvhpZt+2QU/IJc=
-github.com/Mmx233/tool v0.6.5 h1:ewVu25vax7nCXaeFURfVgDrhjy4yqhKiZrrmfwcJH64=
-github.com/Mmx233/tool v0.6.5/go.mod h1:gg+b9qiYcD0DjTCk7PrNd7/ESbLJcSFn2P6pyjcD+B8=
+github.com/Mmx233/tool v0.6.7 h1:gty4lvh+yjiompTOaQEPferDKeu/KVJ1YVb9IaAc40A=
+github.com/Mmx233/tool v0.6.7/go.mod h1:pCKnFmN2yf3u58YjANsQ8261SxI/c8/0wiZhptjRsOk=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

@@ -4,7 +4,7 @@ go 1.19
 
 require (
 	github.com/Mmx233/EnvConfig v0.0.2
-	github.com/Mmx233/tool v0.6.5
+	github.com/Mmx233/tool v0.6.7
 	github.com/sirupsen/logrus v1.9.0
 )
 

@@ -1,7 +1,14 @@
 package main
 
-import log "github.com/sirupsen/logrus"
+import (
+	"github.com/ncuhome/FeishuGitPushBot/modules/feishu"
+	log "github.com/sirupsen/logrus"
+)
 
 func main() {
 	log.Infoln("Sys Boost")
+
+	if e := feishu.SendText("text"); e != nil {
+		panic(e)
+	}
 }
