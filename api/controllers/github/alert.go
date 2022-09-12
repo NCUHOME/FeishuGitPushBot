@@ -141,7 +141,7 @@ func Event(c *gin.Context) {
 			var els = []interface{}{
 				genMadeByElements(f.Repository.Name, "", f.Sender.Login),
 			}
-			if f.Changes.Title.From != f.Issue.Title {
+			if f.Changes.Title.From != "" && f.Changes.Title.From != f.Issue.Title {
 				els = append(els, feishu.CardMsgContentElement{
 					Tag: "div",
 					Fields: []feishu.CardMsgElementField{
@@ -162,7 +162,7 @@ func Event(c *gin.Context) {
 					},
 				})
 			}
-			if f.Changes.Body.From != f.Issue.Body {
+			if f.Changes.Body.From != "" && f.Changes.Body.From != f.Issue.Body {
 				els = append(els, feishu.CardMsgContentElement{
 					Tag: "div",
 					Fields: []feishu.CardMsgElementField{
