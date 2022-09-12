@@ -12,19 +12,45 @@ import (
 	"strings"
 )
 
-func doSendMsg(title string, text string, link string) {
-	if e := feishu.SendPostText(title,
-		[]feishu.ReqSendPostTextContent{
+func genMadeByElements(repo, branch, author string) *feishu.CardMsgContentElement {
+	return &feishu.CardMsgContentElement{
+		Tag: "div",
+		Fields: []feishu.CardMsgElementField{
 			{
-				Tag:  "text",
-				Text: text + "\n",
+				IsShort: true,
+				Text: feishu.CardMsgElementText{
+					Tag:     "lark_md",
+					Content: fmt.Sprintf("**仓库**\\n%s:%s", repo, branch),
+				},
 			},
 			{
-				Tag:  "a",
-				Text: "点击查看",
-				Href: link,
+				IsShort: true,
+				Text: feishu.CardMsgElementText{
+					Tag:     "lark_md",
+					Content: fmt.Sprintf("**创建人**\\n%s", author),
+				},
 			},
-		}); e != nil {
+		},
+	}
+}
+func genUrlButton(content, url string) *feishu.CardMsgActionElement {
+	return &feishu.CardMsgActionElement{
+		Tag: "action",
+		Actions: []feishu.CardMsgElementButton{
+			{
+				Tag: "button",
+				Text: feishu.CardMsgElementText{
+					Tag:     "plain_text",
+					Content: content,
+				},
+				Url: url,
+			},
+		},
+	}
+}
+
+func sendMsg(conf *feishu.ReqCardMsg) {
+	if e := feishu.SendCardMsg(conf); e != nil {
 		log.Errorf("发送消息失败：%v\n", e)
 	}
 }
@@ -44,22 +70,32 @@ func Event(c *gin.Context) {
 			break
 		}
 
-		title := fmt.Sprintf(
-			"[%s:%s] %d new commit by %s",
-			f.Repository.Name,
-			strings.Split(f.Ref, "/")[2],
-			len(f.Commits),
-			f.Pusher.Name,
-		)
 		var content string
 		for _, commit := range f.Commits {
 			content += fmt.Sprintf(
-				"%s - %s\n",
+				"+ %s - %s\n",
 				commit.Message,
 				commit.Committer.Name,
 			)
 		}
-		doSendMsg(title, content, f.HeadCommit.Url)
+
+		sendMsg(&feishu.ReqCardMsg{
+			Header: &feishu.CardMsgHeader{
+				Title: feishu.CardMsgElementText{
+					Tag:     "plain_text",
+					Content: "🍏 New commits",
+				},
+			},
+			Elements: []interface{}{
+				genMadeByElements(f.Repository.Name, strings.Split(f.Ref, "/")[2], f.Sender.Login),
+				feishu.CardMsgElementText{
+					Tag:     "lark_md",
+					Content: content,
+					Lines:   0,
+				},
+				genUrlButton("查看", f.HeadCommit.Url),
+			},
+		})
 	case "create":
 		var f githubCall.CreateEvent
 		if e := json.NewDecoder(body).Decode(&f); e != nil {
@@ -67,13 +103,25 @@ func Event(c *gin.Context) {
 			return
 		}
 
-		doSendMsg(fmt.Sprintf(
+		sendMsg(&feishu.ReqCardMsg{
+			Header: &feishu.CardMsgHeader{
+				Title: feishu.CardMsgElementText{
+					Tag:     "plain_text",
+					Content: fmt.Sprintf("🍊 New %s", f.RefType),
+				},
+			},
+			Elements: []interface{}{
+				genMadeByElements(f.Repository.Name, strings.Split(f.Ref, "/")[2], f.Sender.Login),
+				genUrlButton("查看", f.Repository.Url),
+			},
+		})
+		/*doSendMsg(fmt.Sprintf(
 			"[%s] New %s %s was pushed by %s",
 			f.Repository.Name,
 			f.RefType,
 			f.Ref,
 			f.Sender.Login,
-		), "", f.Repository.Url)
+		), "", f.Repository.Url)*/
 	case "delete":
 		var f githubCall.DeleteEvent
 		if e := json.NewDecoder(body).Decode(&f); e != nil {
@@ -81,13 +129,25 @@ func Event(c *gin.Context) {
 			return
 		}
 
-		doSendMsg(fmt.Sprintf(
+		sendMsg(&feishu.ReqCardMsg{
+			Header: &feishu.CardMsgHeader{
+				Title: feishu.CardMsgElementText{
+					Tag:     "plain_text",
+					Content: fmt.Sprintf("🍅 %s deleted", f.RefType),
+				},
+			},
+			Elements: []interface{}{
+				genMadeByElements(f.Repository.Name, strings.Split(f.Ref, "/")[2], f.Sender.Login),
+				genUrlButton("查看", f.Repository.Url),
+			},
+		})
+		/*doSendMsg(fmt.Sprintf(
 			"[%s] The %s %s was deleted by %s",
 			f.Repository.Name,
 			f.RefType,
 			f.Ref,
 			f.Sender.Login,
-		), "", f.Repository.Url)
+		), "", f.Repository.Url)*/
 	default:
 		callback.Error(c, 10, nil)
 		return

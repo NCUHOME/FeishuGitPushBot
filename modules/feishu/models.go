@@ -25,7 +25,7 @@ type ReqCardMsg struct {
 	//https://open.feishu.cn/document/ukTMukTMukTM/ukTNwUjL5UDM14SO1ATN
 	Header *CardMsgHeader `json:"header,omitempty"`
 	//https://open.feishu.cn/document/ukTMukTMukTM/uEjNwUjLxYDM14SM2ATN
-	Elements []interface{}
+	Elements []interface{} `json:"elements"`
 }
 
 // CardMsgContentElement https://open.feishu.cn/document/ukTMukTMukTM/uMjNwUjLzYDM14yM2ATN
@@ -75,8 +75,8 @@ type CardMsgHeader struct {
 
 // CardMsgElementField https://open.feishu.cn/document/ukTMukTMukTM/uYzNwUjL2cDM14iN3ATN
 type CardMsgElementField struct {
-	IsShort bool   `json:"is_short"`
-	Text    string `json:"text"`
+	IsShort bool               `json:"is_short"`
+	Text    CardMsgElementText `json:"text"`
 }
 
 // CardMsgElementText https://open.feishu.cn/document/ukTMukTMukTM/uUzNwUjL1cDM14SN3ATN
