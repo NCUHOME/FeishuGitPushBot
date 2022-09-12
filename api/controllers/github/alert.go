@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-func genMadeByElements(repo, branch, author string) *feishu.CardMsgContentElement {
+func genMadeByElements(repo, content, author string) *feishu.CardMsgContentElement {
 	return &feishu.CardMsgContentElement{
 		Tag: "div",
 		Fields: []feishu.CardMsgElementField{
@@ -20,7 +20,7 @@ func genMadeByElements(repo, branch, author string) *feishu.CardMsgContentElemen
 				IsShort: true,
 				Text: feishu.CardMsgElementText{
 					Tag:     "lark_md",
-					Content: fmt.Sprintf("**仓库**\\n%s:%s", repo, branch),
+					Content: fmt.Sprintf("**目标**\\n%s:%s", repo, content),
 				},
 			},
 			{
@@ -33,6 +33,7 @@ func genMadeByElements(repo, branch, author string) *feishu.CardMsgContentElemen
 		},
 	}
 }
+
 func genUrlButton(content, url string) *feishu.CardMsgActionElement {
 	return &feishu.CardMsgActionElement{
 		Tag: "action",
@@ -91,7 +92,6 @@ func Event(c *gin.Context) {
 				feishu.CardMsgElementText{
 					Tag:     "lark_md",
 					Content: content,
-					Lines:   0,
 				},
 				genUrlButton("查看", f.HeadCommit.Url),
 			},
@@ -111,17 +111,10 @@ func Event(c *gin.Context) {
 				},
 			},
 			Elements: []interface{}{
-				genMadeByElements(f.Repository.Name, strings.Split(f.Ref, "/")[2], f.Sender.Login),
+				genMadeByElements(f.Repository.Name, f.Ref, f.Sender.Login),
 				genUrlButton("查看", f.Repository.Url),
 			},
 		})
-		/*doSendMsg(fmt.Sprintf(
-			"[%s] New %s %s was pushed by %s",
-			f.Repository.Name,
-			f.RefType,
-			f.Ref,
-			f.Sender.Login,
-		), "", f.Repository.Url)*/
 	case "delete":
 		var f githubCall.DeleteEvent
 		if e := json.NewDecoder(body).Decode(&f); e != nil {
@@ -137,17 +130,10 @@ func Event(c *gin.Context) {
 				},
 			},
 			Elements: []interface{}{
-				genMadeByElements(f.Repository.Name, strings.Split(f.Ref, "/")[2], f.Sender.Login),
+				genMadeByElements(f.Repository.Name, f.Ref, f.Sender.Login),
 				genUrlButton("查看", f.Repository.Url),
 			},
 		})
-		/*doSendMsg(fmt.Sprintf(
-			"[%s] The %s %s was deleted by %s",
-			f.Repository.Name,
-			f.RefType,
-			f.Ref,
-			f.Sender.Login,
-		), "", f.Repository.Url)*/
 	default:
 		callback.Error(c, 10, nil)
 		return
