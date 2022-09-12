@@ -20,7 +20,7 @@ func genMadeByElements(repo, content, author string) *feishu.CardMsgContentEleme
 				IsShort: true,
 				Text: feishu.CardMsgElementText{
 					Tag:     "lark_md",
-					Content: fmt.Sprintf("**目标**\n%s:%s", repo, content),
+					Content: fmt.Sprintf("**目标**\n%s : %s", repo, content),
 				},
 			},
 			{
@@ -80,9 +80,9 @@ func Event(c *gin.Context) {
 				"%s %s - %s",
 				func() string {
 					if index%2 == 0 {
-						return "🔹"
+						return "🔸"
 					}
-					return "🔸"
+					return "🔹"
 				}(),
 				commit.Message,
 				commit.Committer.Name,
