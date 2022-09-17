@@ -341,9 +341,12 @@ func Event(c *gin.Context) {
 				},
 				Elements: append(els, genUrlButton("查看", f.PullRequest.HtmlUrl)),
 			})
-		case "reopened":
-			fallthrough
 		case "closed":
+			if f.PullRequest.Merged {
+				f.Action = "merged"
+			}
+			fallthrough
+		case "reopened":
 			sendMsg(&feishu.ReqCardMsg{
 				Header: &feishu.CardMsgHeader{
 					Title: feishu.CardMsgElementText{
