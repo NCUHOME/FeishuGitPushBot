@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/ncuhome/FeishuGitPushBot/api/callback"
-	githubCall "github.com/ncuhome/FeishuGitPushBot/api/callback/github"
+	form "github.com/ncuhome/FeishuGitPushBot/api/models/form/github"
 	"github.com/ncuhome/FeishuGitPushBot/modules/feishu"
 	"strings"
 )
@@ -16,7 +16,7 @@ func Event(c *gin.Context) {
 	body := i.(*bytes.Buffer)
 	switch c.GetHeader("X-GitHub-Event") {
 	case "push":
-		var f githubCall.PushEvent
+		var f form.PushEvent
 		if e := json.NewDecoder(body).Decode(&f); e != nil {
 			callback.Error(c, 8, e)
 			return
@@ -68,7 +68,7 @@ func Event(c *gin.Context) {
 			},
 		})
 	case "create":
-		var f githubCall.CreateEvent
+		var f form.CreateEvent
 		if e := json.NewDecoder(body).Decode(&f); e != nil {
 			callback.Error(c, 8, e)
 			return
@@ -87,7 +87,7 @@ func Event(c *gin.Context) {
 			},
 		})
 	case "delete":
-		var f githubCall.DeleteEvent
+		var f form.DeleteEvent
 		if e := json.NewDecoder(body).Decode(&f); e != nil {
 			callback.Error(c, 8, e)
 			return
@@ -106,7 +106,7 @@ func Event(c *gin.Context) {
 			},
 		})
 	case "issues":
-		var f githubCall.IssueEvent
+		var f form.IssueEvent
 		if e := json.NewDecoder(body).Decode(&f); e != nil {
 			callback.Error(c, 8, e)
 			return
@@ -214,7 +214,7 @@ func Event(c *gin.Context) {
 			callback.Error(c, 10, nil)
 		}
 	case "issue_comment":
-		var f githubCall.IssueCommentEvent
+		var f form.IssueCommentEvent
 		if e := json.NewDecoder(body).Decode(&f); e != nil {
 			callback.Error(c, 8, e)
 			return
@@ -244,7 +244,7 @@ func Event(c *gin.Context) {
 			},
 		})
 	case "pull_request":
-		var f githubCall.PullRequestEvent
+		var f form.PullRequestEvent
 		if e := json.NewDecoder(body).Decode(&f); e != nil {
 			callback.Error(c, 8, e)
 			return
