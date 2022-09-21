@@ -140,20 +140,23 @@ func Event(c *gin.Context) {
 		case "edited":
 			var els = []interface{}{
 				genMadeByElements(f.Repository.Name, "", f.Sender.Login),
+				feishu.CardMsgContentElement{
+					Tag: "div",
+					Fields: []feishu.CardMsgElementField{
+						{
+							Text: feishu.CardMsgElementText{
+								Tag:     "lark_md",
+								Content: fmt.Sprintf("**%s**", f.Issue.Title),
+							},
+						},
+					},
+				},
 			}
 			if f.Changes.Title.From != "" && f.Changes.Title.From != f.Issue.Title {
 				els = append(els, feishu.CardMsgContentElement{
 					Tag: "div",
 					Fields: []feishu.CardMsgElementField{
 						{
-							IsShort: true,
-							Text: feishu.CardMsgElementText{
-								Tag:     "lark_md",
-								Content: fmt.Sprintf("**原标题**\n%s", f.Changes.Title.From),
-							},
-						},
-						{
-							IsShort: true,
 							Text: feishu.CardMsgElementText{
 								Tag:     "lark_md",
 								Content: fmt.Sprintf("**新标题**\n%s", f.Issue.Title),
@@ -202,7 +205,7 @@ func Event(c *gin.Context) {
 							{
 								Text: feishu.CardMsgElementText{
 									Tag:     "lark_md",
-									Content: fmt.Sprintf("**标题**\n%s", f.Issue.Title),
+									Content: fmt.Sprintf("**%s**", f.Issue.Title),
 								},
 							},
 						},
@@ -229,6 +232,17 @@ func Event(c *gin.Context) {
 			},
 			Elements: []interface{}{
 				genMadeByElements(f.Repository.Name, "", f.Sender.Login),
+				feishu.CardMsgContentElement{
+					Tag: "div",
+					Fields: []feishu.CardMsgElementField{
+						{
+							Text: feishu.CardMsgElementText{
+								Tag:     "lark_md",
+								Content: fmt.Sprintf("**%s**", f.Issue.Title),
+							},
+						},
+					},
+				},
 				feishu.CardMsgContentElement{
 					Tag: "div",
 					Fields: []feishu.CardMsgElementField{
@@ -297,23 +311,26 @@ func Event(c *gin.Context) {
 		case "edited":
 			var els = []interface{}{
 				genMadeByElements(f.Repository.Name, "", f.Sender.Login),
+				feishu.CardMsgContentElement{
+					Tag: "div",
+					Fields: []feishu.CardMsgElementField{
+						{
+							Text: feishu.CardMsgElementText{
+								Tag:     "lark_md",
+								Content: fmt.Sprintf("**%s**", f.PullRequest.Title),
+							},
+						},
+					},
+				},
 			}
 			if f.Changes.Title.From != "" && f.Changes.Title.From != f.PullRequest.Title {
 				els = append(els, feishu.CardMsgContentElement{
 					Tag: "div",
 					Fields: []feishu.CardMsgElementField{
 						{
-							IsShort: true,
 							Text: feishu.CardMsgElementText{
 								Tag:     "lark_md",
 								Content: fmt.Sprintf("**原标题**\n%s", f.Changes.Title.From),
-							},
-						},
-						{
-							IsShort: true,
-							Text: feishu.CardMsgElementText{
-								Tag:     "lark_md",
-								Content: fmt.Sprintf("**新标题**\n%s", f.PullRequest.Title),
 							},
 						},
 					},
@@ -362,7 +379,7 @@ func Event(c *gin.Context) {
 							{
 								Text: feishu.CardMsgElementText{
 									Tag:     "lark_md",
-									Content: fmt.Sprintf("**标题**\n%s", f.PullRequest.Title),
+									Content: fmt.Sprintf("**%s**", f.PullRequest.Title),
 								},
 							},
 						},
