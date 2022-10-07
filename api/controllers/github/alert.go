@@ -227,7 +227,7 @@ func Event(c *gin.Context) {
 			Header: &feishu.CardMsgHeader{
 				Title: feishu.CardMsgElementText{
 					Tag:     "plain_text",
-					Content: fmt.Sprintf("🥜 Issue comment %s", f.Action),
+					Content: fmt.Sprintf("🌻 Comment %s", f.Action),
 				},
 			},
 			Elements: []interface{}{
