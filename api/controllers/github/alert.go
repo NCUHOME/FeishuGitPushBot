@@ -159,7 +159,7 @@ func Event(c *gin.Context) {
 						{
 							Text: feishu.CardMsgElementText{
 								Tag:     "lark_md",
-								Content: fmt.Sprintf("**新标题**\n%s", f.Issue.Title),
+								Content: fmt.Sprintf("**旧标题**\n%s", f.Changes.Title.From),
 							},
 						},
 					},
