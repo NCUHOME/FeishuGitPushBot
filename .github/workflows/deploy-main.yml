@@ -1,4 +1,4 @@
-name: Ncuos Rancher Deploy CI
+name: Deploy
 
 on:
   push:
@@ -6,31 +6,32 @@ on:
       - v**
 
 jobs:
-
-  build:
-
-    runs-on: [self-hosted]
-
+  Deploy:
+    runs-on: arc-rs-ncuhome
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
 
-      - name: Build Binary
+      - name: Setup Ko
+        uses: ko-build/setup-ko@v0.9
+        with:
+          use-sudo: true
+
+      - name: Login to Registry
         env:
-          CGO_ENABLED: 0
-        run: go build -ldflags "-s -w -extldflags '-static'" -o runner
+          registry: ${{ secrets.REGISTRY_URI }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+        run: echo "$password" | ko login "$registry" -u "$username" --password-stdin
 
-      - name: Build the Docker image
-        run: docker build . --file Dockerfile --tag harbor.ncuos.com/feishu-git-push-bot/core:latest
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
 
-      - name: Push
-        run: docker push harbor.ncuos.com/feishu-git-push-bot/core:latest
-
-      - name: Redeploy
-        uses: ncuhome/rancher-workloads-redeploy-action@v1.2
+      - name: Build Image and Push
         env:
-          API_ACCESS_ADDR: https://rancher.ncuos.com/v3/
-          CLUSTER: local
-          PROJECT: p-qld78
-          NAMESPACE: feishu-git-push-bot
-          WORKLOAD: core
-          RANCHER_TOKEN: "token-wzrl7:${{ secrets.rancher_key }}"
+          KO_DOCKER_REPO: "${{ secrets.REGISTRY_URI }}/feishu-git-push-bot/core"
+          KO_GFLAGS: >-
+            -trimpath
+            -ldflags='-s -w -extldflags "-static"'
+        run: ko build --sbom none --bare --tags latest,${{ github.ref_name }} ./main.go
