@@ -144,12 +144,98 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 		d.Ref = fmt.Sprintf("🌿 [%s](%s/tree/%s)", wr.GetHeadBranch(), e.GetRepo().GetHTMLURL(), wr.GetHeadBranch())
 		d.URL = wr.GetHTMLURL()
 
+	case *github.IssueCommentEvent:
+		actionZh := "已评论"
+		if e.GetAction() != "created" {
+			actionZh = e.GetAction()
+		}
+		d.Title = fmt.Sprintf("💬 问题 %s", actionZh)
+		iss := e.GetIssue()
+		d.Text = fmt.Sprintf("**问题**: [%s](%s)\n> %s", iss.GetTitle(), iss.GetHTMLURL(), truncate(e.GetComment().GetBody()))
+		d.URL = e.GetComment().GetHTMLURL()
+
+	case *github.WorkflowJobEvent:
+		wj := e.GetWorkflowJob()
+		icon, conclusion := "⚙️", wj.GetConclusion()
+		if conclusion == "success" {
+			icon = "🟢"
+		} else if conclusion == "failure" {
+			icon = "🔴"
+		}
+		d.Title = fmt.Sprintf("%s 作业 %s", icon, e.GetAction())
+		d.Text = fmt.Sprintf("**作业名称**: %s\n**状态**: `%s`\n**步骤数量**: %d", wj.GetName(), wj.GetStatus(), len(wj.Steps))
+		d.URL = wj.GetHTMLURL()
+
+	case *github.ReleaseEvent:
+		actionZh := "已发布"
+		if e.GetAction() != "published" {
+			actionZh = e.GetAction()
+		}
+		d.Title = fmt.Sprintf("📦 版本发布 %s", actionZh)
+		r := e.GetRelease()
+		d.Text = fmt.Sprintf("**标签**: %s\n**名称**: %s\n> %s", r.GetTagName(), r.GetName(), truncate(r.GetBody()))
+		d.URL = r.GetHTMLURL()
+
+	case *github.CreateEvent:
+		refType := e.GetRefType()
+		if refType == "branch" {
+			refType = "分支"
+		} else if refType == "tag" {
+			refType = "标签"
+		}
+		d.Title = fmt.Sprintf("🆕 已创建 %s", refType)
+		if ref := e.GetRef(); ref != "" {
+			d.Ref = fmt.Sprintf("📍 `%s`", ref)
+			d.Text = fmt.Sprintf("**引用**: `%s`", ref)
+		}
+
+	case *github.DeleteEvent:
+		refType := e.GetRefType()
+		if refType == "branch" {
+			refType = "分支"
+		} else if refType == "tag" {
+			refType = "标签"
+		}
+		d.Title = fmt.Sprintf("🗑️ 已删除 %s", refType)
+		d.Ref = fmt.Sprintf("📍 `%s`", e.GetRef())
+
+	case *github.StarEvent:
+		d.Title = "⭐ 仓库收到了 Star"
+		if e.GetAction() == "deleted" {
+			d.Title = "💔 仓库被取消了 Star"
+		}
+
+	case *github.ForkEvent:
+		d.Title = "🍴 仓库被 Fork"
+		f := e.GetForkee()
+		d.Text = fmt.Sprintf("Fork 到 **[%s](%s)**", f.GetFullName(), f.GetHTMLURL())
+		d.URL = f.GetHTMLURL()
+
+	case *github.DiscussionEvent:
+		actionZh := "已发起"
+		if e.GetAction() != "created" {
+			actionZh = e.GetAction()
+		}
+		d.Title = fmt.Sprintf("📢 讨论 %s", actionZh)
+		disc := e.GetDiscussion()
+		d.Text = fmt.Sprintf("**标题**: %s\n> %s", disc.GetTitle(), truncate(disc.GetBody()))
+		d.URL = disc.GetHTMLURL()
+
+	case *github.MemberEvent:
+		actionZh := "已添加"
+		if e.GetAction() != "added" {
+			actionZh = e.GetAction()
+		}
+		member := e.GetMember()
+		d.Title = fmt.Sprintf("👥 成员更新 %s", actionZh)
+		d.Text = fmt.Sprintf("**用户**: [%s](%s)", member.GetLogin(), member.GetHTMLURL())
+
 	default:
-		// 其他事件简略处理
+		// 其他事件提取动作
 		var m map[string]any
 		_ = json.Unmarshal(payload, &m)
 		if act, ok := m["action"].(string); ok {
-			d.Text = fmt.Sprintf("**动作**: `%s`", act)
+			d.Text = fmt.Sprintf("**动作**: %s (%s)", act, eventType)
 		}
 	}
 	return d

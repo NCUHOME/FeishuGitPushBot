@@ -46,7 +46,16 @@ func TestParseEvent(t *testing.T) {
 				"issue": {"title": "Bug", "html_url": "http://issue"},
 				"comment": {"body": "Me too", "html_url": "http://comment"}
 			}`),
-			wantTitle: "🔔 GitHub 推送: issue_comment",
+			wantTitle: "💬 问题 已评论",
+		},
+		{
+			name:      "成员添加",
+			eventType: "member",
+			payload: []byte(`{
+				"action": "added",
+				"member": {"login": "Alice", "html_url": "http://alice"}
+			}`),
+			wantTitle: "👥 成员更新 已添加",
 		},
 	}
 
