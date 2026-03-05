@@ -24,7 +24,7 @@
 | :--- | :--- | :--- |
 | `FEISHU_WEBHOOK` | 飞书机器人 Webhook 地址 | `https://open.feishu.cn/open-apis/bot/v2/hook/...` |
 | `FEISHU_SECRET` | 飞书机器人安全校验密钥 | `your_feishu_secret` |
-| `GITHUB_WEBHOOK_KEY` | GitHub Webhook Secret | `your_github_secret` |
+| `GITHUB_KEY` | GitHub Webhook Secret | `your_github_secret` |
 
 ### 2. 本地运行
 
@@ -46,7 +46,7 @@ docker build -t feishu-git-push-bot .
 docker run -d -p 8080:8080 \
   -e FEISHU_WEBHOOK="xxx" \
   -e FEISHU_SECRET="xxx" \
-  -e GITHUB_WEBHOOK_KEY="xxx" \
+  -e GITHUB_KEY="xxx" \
   feishu-git-push-bot
 ```
 
@@ -56,7 +56,7 @@ docker run -d -p 8080:8080 \
 
 - **Payload URL**: `https://<你的域名>/github/webhook`
 - **Content type**: `application/json`
-- **Secret**: 设置为你的 `GITHUB_WEBHOOK_KEY`
+- **Secret**: 设置为你的 `GITHUB_KEY`
 - **Events**: 建议勾选 `Push`, `Pull Request`, `Issues`, `Workflow runs`, `Releases` 等。
 
 ## 📂 项目结构

@@ -13,10 +13,15 @@ import (
 // GithubHandler 处理 GitHub Webhook 请求
 func GithubHandler(c *gin.Context) {
 	// 验证签名
-	payload, err := github.ValidatePayload(c.Request, []byte(C.Github.WebhookKey))
+	secret := strings.TrimSpace(C.Github.Key)
+	payload, err := github.ValidatePayload(c.Request, []byte(secret))
 	if err != nil {
-		slog.Error("签名验证失败", "error", err)
-		c.AbortWithStatusJSON(400, gin.H{"code": 1, "msg": err.Error()})
+		slog.Error("签名验证失败",
+			"error", err,
+			"secret_len", len(secret),
+			"content_type", c.ContentType(),
+		)
+		c.AbortWithStatusJSON(400, gin.H{"code": 1, "msg": "签名验证失败"})
 		return
 	}
 
