@@ -8,9 +8,9 @@ import (
 )
 
 func main() {
-	// 初始化日志
-	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, opts)))
+	// 初始化日志，生产环境推荐 JSON 格式
+	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, opts)))
 
 	// 加载配置
 	bot.LoadConfig()

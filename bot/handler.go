@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/go-github/v84/github"
@@ -59,12 +60,11 @@ func GithubHandler(c *gin.Context) {
 }
 
 type eventDetail struct {
-	Title   string
-	Text    string
-	URL     string
-	Ref     string
-	RefName string
-	Skip    bool
+	Title string
+	Text  string
+	URL   string
+	Ref   string
+	Skip  bool
 }
 
 func parseEvent(event any, eventType string, payload []byte) eventDetail {
@@ -80,13 +80,11 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 		if isTag {
 			tag := strings.TrimPrefix(ref, "refs/tags/")
 			d.Title = "🏷️ 标签推送"
-			d.RefName = tag
 			d.Ref = fmt.Sprintf("🏷️ [%s](%s/releases/tag/%s)", tag, repoUrl, tag)
 			d.URL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, tag)
 		} else if strings.HasPrefix(ref, "refs/heads/") {
 			branch := strings.TrimPrefix(ref, "refs/heads/")
 			d.Title = "🌿 分支推送"
-			d.RefName = branch
 			d.Ref = fmt.Sprintf("🌿 [%s](%s/tree/%s)", branch, repoUrl, branch)
 		}
 
@@ -142,7 +140,6 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 		}
 
 		d.Text = fmt.Sprintf("**标题**: %s\n**状态**: %s%s", pr.GetTitle(), stateZh, body)
-		d.RefName = pr.GetHead().GetRef()
 		d.Ref = fmt.Sprintf("🌿 [%s -> %s](%s)", pr.GetHead().GetRef(), pr.GetBase().GetRef(), pr.GetHTMLURL())
 		d.URL = pr.GetHTMLURL()
 
@@ -220,8 +217,7 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 			statusZh = "已完成"
 		}
 
-		d.Text = fmt.Sprintf("**名称**: %s\n**状态**: %s%s", wr.GetName(), statusZh, conclusionStr)
-		d.RefName = wr.GetHeadBranch()
+		d.Text = fmt.Sprintf("**工作流**: %s | **状态**: %s%s", wr.GetName(), statusZh, conclusionStr)
 		d.Ref = fmt.Sprintf("🌿 [%s](%s/tree/%s)", wr.GetHeadBranch(), e.GetRepo().GetHTMLURL(), wr.GetHeadBranch())
 		d.URL = wr.GetHTMLURL()
 
@@ -284,7 +280,7 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 			statusZh = "已完成"
 		}
 
-		d.Text = fmt.Sprintf("**作业名称**: %s\n**状态**: %s%s\n**步骤数量**: %d", wj.GetName(), statusZh, conclusionStr, len(wj.Steps))
+		d.Text = fmt.Sprintf("**作业**: %s | **状态**: %s%s | **步骤**: %d", wj.GetName(), statusZh, conclusionStr, len(wj.Steps))
 		d.URL = wj.GetHTMLURL()
 
 	case *github.ReleaseEvent:
@@ -300,32 +296,12 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 		}
 		d.Text = fmt.Sprintf("**标签**: %s\n**名称**: %s%s", r.GetTagName(), r.GetName(), body)
 		d.URL = r.GetHTMLURL()
-		d.RefName = r.GetTagName()
 
 	case *github.CreateEvent:
-		refType := e.GetRefType()
-		if refType == "branch" {
-			refType = "分支"
-		} else if refType == "tag" {
-			refType = "标签"
-		}
-		d.Title = fmt.Sprintf("🆕 已创建 %s", refType)
-		if ref := e.GetRef(); ref != "" {
-			d.RefName = ref
-			d.Ref = fmt.Sprintf("📍 %s", ref)
-			d.Text = fmt.Sprintf("**引用**: %s", ref)
-		}
+		d.Skip = true // 与 PushEvent 重复，跳过
 
 	case *github.DeleteEvent:
-		refType := e.GetRefType()
-		if refType == "branch" {
-			refType = "分支"
-		} else if refType == "tag" {
-			refType = "标签"
-		}
-		d.Title = fmt.Sprintf("🗑️ 已删除 %s", refType)
-		d.RefName = e.GetRef()
-		d.Ref = fmt.Sprintf("📍 %s", e.GetRef())
+		d.Skip = true // 与 PushEvent 重复，跳过
 
 	case *github.StarEvent:
 		d.Title = "⭐ 仓库收到了 Star"
@@ -399,12 +375,12 @@ func buildCard(repo, repoUrl, sender, senderUrl string, detail eventDetail) *Car
 		},
 	}
 
-	if detail.RefName != "" {
+	if detail.Ref != "" {
 		fields = append(fields, CardField{
 			IsShort: true,
 			Text: &Text{
 				Tag:     "lark_md",
-				Content: fmt.Sprintf("**🌿 引用**\n%s", detail.RefName),
+				Content: fmt.Sprintf("**🌿 引用**\n%s", detail.Ref),
 			},
 		})
 	}
@@ -412,8 +388,13 @@ func buildCard(repo, repoUrl, sender, senderUrl string, detail eventDetail) *Car
 	card.AddDiv("", fields)
 
 	if detail.Text != "" {
-		card.AddDivider()
-		card.AddMarkdown(detail.Text)
+		// 如果是工作流或作业，直接在上方展示摘要，不再单独用分割线隔离文本，除非文本内容较多
+		if strings.Contains(detail.Title, "工作流") || strings.Contains(detail.Title, "作业") {
+			card.AddMarkdown(detail.Text)
+		} else {
+			card.AddDivider()
+			card.AddMarkdown(detail.Text)
+		}
 	}
 
 	if detail.URL != "" {
@@ -424,6 +405,9 @@ func buildCard(repo, repoUrl, sender, senderUrl string, detail eventDetail) *Car
 			Type: "primary",
 		})
 	}
+
+	// 增加备注页脚
+	card.AddNote(fmt.Sprintf("🕒 %s | 来自 FeishuGitPushBot", time.Now().Format("15:04:05")))
 
 	return card
 }
@@ -451,8 +435,9 @@ func containsAny(s string, subs ...string) bool {
 }
 
 func truncate(s string) string {
-	if len(s) > 100 {
-		return s[:100] + "..."
+	r := []rune(s)
+	if len(r) > 100 {
+		return string(r[:100]) + "..."
 	}
 	return s
 }

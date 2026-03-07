@@ -29,6 +29,12 @@ func LoadConfig() {
 	// 比如 GITHUB_WEBHOOK_KEY -> github.webhook_key (需要特殊处理第一个下划线)
 	err := k.Load(env.Provider("", ".", func(s string) string {
 		s = strings.ToLower(s)
+		if s == "feishu_webhook" {
+			return "feishu.webhook"
+		}
+		if s == "feishu_secret" {
+			return "feishu.secret"
+		}
 		if strings.HasPrefix(s, "feishu_") {
 			return "feishu." + strings.TrimPrefix(s, "feishu_")
 		}
