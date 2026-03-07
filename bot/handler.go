@@ -35,6 +35,11 @@ func GithubHandler(c *gin.Context) {
 
 	detail := parseEvent(event, eventType, payload)
 
+	if detail.Skip {
+		c.JSON(200, gin.H{"code": 0, "msg": "ignored"})
+		return
+	}
+
 	// 获取仓库和发送者信息
 	var m map[string]any
 	_ = json.Unmarshal(payload, &m)
@@ -42,9 +47,10 @@ func GithubHandler(c *gin.Context) {
 	repoUrl := ext(m, "repository", "html_url")
 	sender := ext(m, "sender", "login")
 	senderUrl := ext(m, "sender", "html_url")
+	senderAvatar := ext(m, "sender", "avatar_url")
 
 	// 构建飞书卡片
-	card := buildCard(repo, repoUrl, sender, senderUrl, detail)
+	card := buildCard(repo, repoUrl, sender, senderUrl, senderAvatar, detail)
 
 	if err := SendCard(card); err != nil {
 		slog.Error("发送飞书消息失败", "error", err)
@@ -58,6 +64,7 @@ type eventDetail struct {
 	Text  string
 	URL   string
 	Ref   string
+	Skip  bool
 }
 
 func parseEvent(event any, eventType string, payload []byte) eventDetail {
@@ -115,9 +122,18 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 			} else {
 				actionZh, icon = "已关闭", "❌"
 			}
+		case "reopened":
+			actionZh = "已重新开启"
+		case "synchronize":
+			actionZh = "已同步更改"
 		}
 		d.Title = fmt.Sprintf("%s 合并请求 %s", icon, actionZh)
-		d.Text = fmt.Sprintf("**标题**: %s\n**状态**: %s\n> %s", pr.GetTitle(), pr.GetState(), truncate(pr.GetBody()))
+		body := truncate(pr.GetBody())
+		if body != "" {
+			body = fmt.Sprintf("\n> %s", body)
+		}
+		d.Text = fmt.Sprintf("**标题**: %s\n**状态**: %s%s", pr.GetTitle(), pr.GetState(), body)
+		d.Ref = fmt.Sprintf("🌿 [%s -> %s](%s)", pr.GetHead().GetRef(), pr.GetBase().GetRef(), pr.GetHTMLURL())
 		d.URL = pr.GetHTMLURL()
 
 	case *github.IssuesEvent:
@@ -128,19 +144,43 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 		}
 		d.Title = fmt.Sprintf("%s 问题 %s", icon, actionZh)
 		iss := e.GetIssue()
-		d.Text = fmt.Sprintf("**标题**: %s\n**状态**: %s\n> %s", iss.GetTitle(), iss.GetState(), truncate(iss.GetBody()))
+		body := truncate(iss.GetBody())
+		if body != "" {
+			body = fmt.Sprintf("\n> %s", body)
+		}
+		d.Text = fmt.Sprintf("**标题**: %s\n**状态**: %s%s", iss.GetTitle(), iss.GetState(), body)
 		d.URL = iss.GetHTMLURL()
 
 	case *github.WorkflowRunEvent:
 		wr := e.GetWorkflowRun()
-		conclusion, icon := wr.GetConclusion(), "🚀"
+		status := wr.GetStatus()
+		conclusion := wr.GetConclusion()
+
+		icon := "🚀"
 		if conclusion == "success" {
 			icon = "✅"
 		} else if conclusion == "failure" {
 			icon = "💥"
+		} else if status == "in_progress" {
+			icon = "🔄"
 		}
-		d.Title = fmt.Sprintf("%s 工作流 %s", icon, e.GetAction())
-		d.Text = fmt.Sprintf("**名称**: %s\n**状态**: `%s`\n**结论**: `%s`", wr.GetName(), wr.GetStatus(), conclusion)
+
+		actionZh := e.GetAction()
+		if actionZh == "completed" {
+			actionZh = "已完成"
+		} else if actionZh == "requested" {
+			actionZh = "已请求"
+		} else if actionZh == "in_progress" {
+			actionZh = "进行中"
+			d.Skip = true // 不推送进行中的状态
+		}
+
+		d.Title = fmt.Sprintf("%s 工作流 %s", icon, actionZh)
+		conclusionStr := ""
+		if conclusion != "" {
+			conclusionStr = fmt.Sprintf("\n**结论**: %s", conclusion) // 去除飞书部分端不解析的行内代码反引号
+		}
+		d.Text = fmt.Sprintf("**名称**: %s\n**状态**: %s%s", wr.GetName(), status, conclusionStr)
 		d.Ref = fmt.Sprintf("🌿 [%s](%s/tree/%s)", wr.GetHeadBranch(), e.GetRepo().GetHTMLURL(), wr.GetHeadBranch())
 		d.URL = wr.GetHTMLURL()
 
@@ -156,14 +196,34 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 
 	case *github.WorkflowJobEvent:
 		wj := e.GetWorkflowJob()
-		icon, conclusion := "⚙️", wj.GetConclusion()
+		status := wj.GetStatus()
+		conclusion := wj.GetConclusion()
+
+		icon := "⚙️"
 		if conclusion == "success" {
 			icon = "🟢"
 		} else if conclusion == "failure" {
 			icon = "🔴"
+		} else if status == "in_progress" {
+			icon = "🔄"
 		}
-		d.Title = fmt.Sprintf("%s 作业 %s", icon, e.GetAction())
-		d.Text = fmt.Sprintf("**作业名称**: %s\n**状态**: `%s`\n**步骤数量**: %d", wj.GetName(), wj.GetStatus(), len(wj.Steps))
+
+		actionZh := e.GetAction()
+		if actionZh == "completed" {
+			actionZh = "已完成"
+		} else if actionZh == "queued" {
+			actionZh = "已排队"
+		} else if actionZh == "in_progress" {
+			actionZh = "进行中"
+			d.Skip = true // 不推送进行中的状态
+		}
+
+		d.Title = fmt.Sprintf("%s 作业 %s", icon, actionZh)
+		conclusionStr := ""
+		if conclusion != "" {
+			conclusionStr = fmt.Sprintf("\n**结论**: %s", conclusion)
+		}
+		d.Text = fmt.Sprintf("**作业名称**: %s\n**状态**: %s%s\n**步骤数量**: %d", wj.GetName(), status, conclusionStr, len(wj.Steps))
 		d.URL = wj.GetHTMLURL()
 
 	case *github.ReleaseEvent:
@@ -173,7 +233,11 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 		}
 		d.Title = fmt.Sprintf("📦 版本发布 %s", actionZh)
 		r := e.GetRelease()
-		d.Text = fmt.Sprintf("**标签**: %s\n**名称**: %s\n> %s", r.GetTagName(), r.GetName(), truncate(r.GetBody()))
+		body := truncate(r.GetBody())
+		if body != "" {
+			body = fmt.Sprintf("\n> %s", body)
+		}
+		d.Text = fmt.Sprintf("**标签**: %s\n**名称**: %s%s", r.GetTagName(), r.GetName(), body)
 		d.URL = r.GetHTMLURL()
 
 	case *github.CreateEvent:
@@ -185,8 +249,8 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 		}
 		d.Title = fmt.Sprintf("🆕 已创建 %s", refType)
 		if ref := e.GetRef(); ref != "" {
-			d.Ref = fmt.Sprintf("📍 `%s`", ref)
-			d.Text = fmt.Sprintf("**引用**: `%s`", ref)
+			d.Ref = fmt.Sprintf("📍 %s", ref)
+			d.Text = fmt.Sprintf("**引用**: %s", ref)
 		}
 
 	case *github.DeleteEvent:
@@ -197,7 +261,7 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 			refType = "标签"
 		}
 		d.Title = fmt.Sprintf("🗑️ 已删除 %s", refType)
-		d.Ref = fmt.Sprintf("📍 `%s`", e.GetRef())
+		d.Ref = fmt.Sprintf("📍 %s", e.GetRef())
 
 	case *github.StarEvent:
 		d.Title = "⭐ 仓库收到了 Star"
@@ -241,7 +305,7 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 	return d
 }
 
-func buildCard(repo, repoUrl, sender, senderUrl string, detail eventDetail) *Card {
+func buildCard(repo, repoUrl, sender, senderUrl, senderAvatar string, detail eventDetail) *Card {
 	card := &Card{
 		Header: &CardHeader{
 			Title:    Text{Tag: "plain_text", Content: detail.Title},
@@ -252,26 +316,36 @@ func buildCard(repo, repoUrl, sender, senderUrl string, detail eventDetail) *Car
 	repoLink := fmt.Sprintf("[%s](%s)", repo, repoUrl)
 	senderLink := fmt.Sprintf("[%s](%s)", sender, senderUrl)
 
+	if senderAvatar != "" {
+		if strings.Contains(senderAvatar, "?") {
+			senderAvatar += "&s=48"
+		} else {
+			senderAvatar += "?s=48"
+		}
+		senderLink = fmt.Sprintf("![avatar](%s) %s", senderAvatar, senderLink)
+	}
+
 	fields := []CardField{
-		{IsShort: true, Text: Text{Tag: "lark_md", Content: fmt.Sprintf("**目标仓库**\n%s", repoLink)}},
+		{IsShort: true, Text: Text{Tag: "lark_md", Content: fmt.Sprintf("**📦 目标仓库**\n%s", repoLink)}},
 	}
 	if detail.Ref != "" {
-		fields = append(fields, CardField{IsShort: true, Text: Text{Tag: "lark_md", Content: fmt.Sprintf("**分支/引用**\n%s", detail.Ref)}})
+		fields = append(fields, CardField{IsShort: true, Text: Text{Tag: "lark_md", Content: fmt.Sprintf("**🌿 分支/引用**\n%s", detail.Ref)}})
 	}
-	fields = append(fields, CardField{IsShort: true, Text: Text{Tag: "lark_md", Content: fmt.Sprintf("**触发者**\n%s", senderLink)}})
+	fields = append(fields, CardField{IsShort: true, Text: Text{Tag: "lark_md", Content: fmt.Sprintf("**👤 触发者**\n%s", senderLink)}})
 
 	// 组装卡片内容
 	card.AddElement("div", nil, fields)
-	card.AddDivider()
 
 	if detail.Text != "" {
+		card.AddDivider()
 		card.AddElement("div", &Text{Tag: "lark_md", Content: detail.Text}, nil)
 	}
 
 	if detail.URL != "" {
+		card.AddDivider()
 		card.AddAction(Button{
 			Tag:  "button",
-			Text: Text{Tag: "plain_text", Content: "查看详情"},
+			Text: Text{Tag: "plain_text", Content: "🔗 查看详情"},
 			Url:  detail.URL,
 			Type: "primary",
 		})
