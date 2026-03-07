@@ -23,7 +23,7 @@ func TestParseEvent(t *testing.T) {
 					{"id": "1234567890", "message": "Initial commit", "url": "http://commit", "author": {"name": "Alice"}}
 				]
 			}`),
-			wantTitle: "🌿 分支推送到",
+			wantTitle: "🌿 分支推送",
 		},
 		{
 			name:      "合并请求事件 - 已开启",

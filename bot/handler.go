@@ -47,10 +47,9 @@ func GithubHandler(c *gin.Context) {
 	repoUrl := ext(m, "repository", "html_url")
 	sender := ext(m, "sender", "login")
 	senderUrl := ext(m, "sender", "html_url")
-	senderAvatar := ext(m, "sender", "avatar_url")
 
 	// 构建飞书卡片
-	card := buildCard(repo, repoUrl, sender, senderUrl, senderAvatar, detail)
+	card := buildCard(repo, repoUrl, sender, senderUrl, detail)
 
 	if err := SendCard(card); err != nil {
 		slog.Error("发送飞书消息失败", "error", err)
@@ -60,11 +59,12 @@ func GithubHandler(c *gin.Context) {
 }
 
 type eventDetail struct {
-	Title string
-	Text  string
-	URL   string
-	Ref   string
-	Skip  bool
+	Title   string
+	Text    string
+	URL     string
+	Ref     string
+	RefName string
+	Skip    bool
 }
 
 func parseEvent(event any, eventType string, payload []byte) eventDetail {
@@ -80,11 +80,13 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 		if isTag {
 			tag := strings.TrimPrefix(ref, "refs/tags/")
 			d.Title = "🏷️ 标签推送"
+			d.RefName = tag
 			d.Ref = fmt.Sprintf("🏷️ [%s](%s/releases/tag/%s)", tag, repoUrl, tag)
 			d.URL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, tag)
 		} else if strings.HasPrefix(ref, "refs/heads/") {
 			branch := strings.TrimPrefix(ref, "refs/heads/")
-			d.Title = "🌿 分支推送到"
+			d.Title = "🌿 分支推送"
+			d.RefName = branch
 			d.Ref = fmt.Sprintf("🌿 [%s](%s/tree/%s)", branch, repoUrl, branch)
 		}
 
@@ -95,14 +97,14 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 					emoji = "🔸"
 				}
 				msg := strings.Split(c.GetMessage(), "\n")[0]
-				lines = append(lines, fmt.Sprintf("%s [%s](%s) %s - %s", emoji, c.GetID()[:7], c.GetURL(), msg, c.GetAuthor().GetName()))
+				lines = append(lines, fmt.Sprintf("%s [%s](%s) %s", emoji, c.GetID()[:7], c.GetURL(), msg))
 			}
 		} else if e.GetDeleted() {
 			d.Title = "🗑️ 引用已删除"
-			lines = append(lines, "_删除了此引用_")
+			lines = append(lines, "🗑️ **删除了此引用**")
 		} else if e.GetCreated() {
 			d.Title = "🆕 引用已创建"
-			lines = append(lines, "_创建了新引用_")
+			lines = append(lines, "🆕 **创建了新引用**")
 		}
 		d.Text = strings.Join(lines, "\n")
 		if hc := e.GetHeadCommit(); hc != nil {
@@ -132,7 +134,15 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 		if body != "" {
 			body = fmt.Sprintf("\n> %s", body)
 		}
-		d.Text = fmt.Sprintf("**标题**: %s\n**状态**: %s%s", pr.GetTitle(), pr.GetState(), body)
+		stateZh := pr.GetState()
+		if stateZh == "open" {
+			stateZh = "开启中"
+		} else if stateZh == "closed" {
+			stateZh = "已关闭"
+		}
+
+		d.Text = fmt.Sprintf("**标题**: %s\n**状态**: %s%s", pr.GetTitle(), stateZh, body)
+		d.RefName = pr.GetHead().GetRef()
 		d.Ref = fmt.Sprintf("🌿 [%s -> %s](%s)", pr.GetHead().GetRef(), pr.GetBase().GetRef(), pr.GetHTMLURL())
 		d.URL = pr.GetHTMLURL()
 
@@ -148,7 +158,13 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 		if body != "" {
 			body = fmt.Sprintf("\n> %s", body)
 		}
-		d.Text = fmt.Sprintf("**标题**: %s\n**状态**: %s%s", iss.GetTitle(), iss.GetState(), body)
+		stateZh := iss.GetState()
+		if stateZh == "open" {
+			stateZh = "开启中"
+		} else if stateZh == "closed" {
+			stateZh = "已关闭"
+		}
+		d.Text = fmt.Sprintf("**标题**: %s\n**状态**: %s%s", iss.GetTitle(), stateZh, body)
 		d.URL = iss.GetHTMLURL()
 
 	case *github.WorkflowRunEvent:
@@ -178,9 +194,34 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 		d.Title = fmt.Sprintf("%s 工作流 %s", icon, actionZh)
 		conclusionStr := ""
 		if conclusion != "" {
-			conclusionStr = fmt.Sprintf("\n**结论**: %s", conclusion) // 去除飞书部分端不解析的行内代码反引号
+			conclusionZh := conclusion
+			switch conclusion {
+			case "success":
+				conclusionZh = "成功"
+			case "failure":
+				conclusionZh = "失败"
+			case "cancelled":
+				conclusionZh = "已取消"
+			case "timed_out":
+				conclusionZh = "超时"
+			case "skipped":
+				conclusionZh = "已跳过"
+			}
+			conclusionStr = fmt.Sprintf("\n**结论**: %s", conclusionZh)
 		}
-		d.Text = fmt.Sprintf("**名称**: %s\n**状态**: %s%s", wr.GetName(), status, conclusionStr)
+
+		statusZh := status
+		switch status {
+		case "queued":
+			statusZh = "排队中"
+		case "in_progress":
+			statusZh = "进行中"
+		case "completed":
+			statusZh = "已完成"
+		}
+
+		d.Text = fmt.Sprintf("**名称**: %s\n**状态**: %s%s", wr.GetName(), statusZh, conclusionStr)
+		d.RefName = wr.GetHeadBranch()
 		d.Ref = fmt.Sprintf("🌿 [%s](%s/tree/%s)", wr.GetHeadBranch(), e.GetRepo().GetHTMLURL(), wr.GetHeadBranch())
 		d.URL = wr.GetHTMLURL()
 
@@ -221,9 +262,29 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 		d.Title = fmt.Sprintf("%s 作业 %s", icon, actionZh)
 		conclusionStr := ""
 		if conclusion != "" {
-			conclusionStr = fmt.Sprintf("\n**结论**: %s", conclusion)
+			conclusionZh := conclusion
+			switch conclusion {
+			case "success":
+				conclusionZh = "成功"
+			case "failure":
+				conclusionZh = "失败"
+			case "cancelled":
+				conclusionZh = "已取消"
+			}
+			conclusionStr = fmt.Sprintf("\n**结论**: %s", conclusionZh)
 		}
-		d.Text = fmt.Sprintf("**作业名称**: %s\n**状态**: %s%s\n**步骤数量**: %d", wj.GetName(), status, conclusionStr, len(wj.Steps))
+
+		statusZh := status
+		switch status {
+		case "queued":
+			statusZh = "排队中"
+		case "in_progress":
+			statusZh = "进行中"
+		case "completed":
+			statusZh = "已完成"
+		}
+
+		d.Text = fmt.Sprintf("**作业名称**: %s\n**状态**: %s%s\n**步骤数量**: %d", wj.GetName(), statusZh, conclusionStr, len(wj.Steps))
 		d.URL = wj.GetHTMLURL()
 
 	case *github.ReleaseEvent:
@@ -239,6 +300,7 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 		}
 		d.Text = fmt.Sprintf("**标签**: %s\n**名称**: %s%s", r.GetTagName(), r.GetName(), body)
 		d.URL = r.GetHTMLURL()
+		d.RefName = r.GetTagName()
 
 	case *github.CreateEvent:
 		refType := e.GetRefType()
@@ -249,6 +311,7 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 		}
 		d.Title = fmt.Sprintf("🆕 已创建 %s", refType)
 		if ref := e.GetRef(); ref != "" {
+			d.RefName = ref
 			d.Ref = fmt.Sprintf("📍 %s", ref)
 			d.Text = fmt.Sprintf("**引用**: %s", ref)
 		}
@@ -261,6 +324,7 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 			refType = "标签"
 		}
 		d.Title = fmt.Sprintf("🗑️ 已删除 %s", refType)
+		d.RefName = e.GetRef()
 		d.Ref = fmt.Sprintf("📍 %s", e.GetRef())
 
 	case *github.StarEvent:
@@ -305,44 +369,54 @@ func parseEvent(event any, eventType string, payload []byte) eventDetail {
 	return d
 }
 
-func buildCard(repo, repoUrl, sender, senderUrl, senderAvatar string, detail eventDetail) *Card {
+func buildCard(repo, repoUrl, sender, senderUrl string, detail eventDetail) *Card {
 	card := &Card{
 		Header: &CardHeader{
 			Title:    Text{Tag: "plain_text", Content: detail.Title},
 			Template: getTemplate(detail.Title),
 		},
+		Config: &CardConfig{
+			WideScreenMode: true,
+			EnableForward:  true,
+		},
 	}
 
-	repoLink := fmt.Sprintf("[%s](%s)", repo, repoUrl)
-	senderLink := fmt.Sprintf("[%s](%s)", sender, senderUrl)
-
-	if senderAvatar != "" {
-		if strings.Contains(senderAvatar, "?") {
-			senderAvatar += "&s=48"
-		} else {
-			senderAvatar += "?s=48"
-		}
-		senderLink = fmt.Sprintf("![avatar](%s) %s", senderAvatar, senderLink)
-	}
-
+	// 紧凑的元数据展示
 	fields := []CardField{
-		{IsShort: true, Text: Text{Tag: "lark_md", Content: fmt.Sprintf("**📦 目标仓库**\n%s", repoLink)}},
+		{
+			IsShort: true,
+			Text: &Text{
+				Tag:     "lark_md",
+				Content: fmt.Sprintf("**📦 仓库**\n[%s](%s)", repo, repoUrl),
+			},
+		},
+		{
+			IsShort: true,
+			Text: &Text{
+				Tag:     "lark_md",
+				Content: fmt.Sprintf("**👤 触发者**\n[%s](%s)", sender, senderUrl),
+			},
+		},
 	}
-	if detail.Ref != "" {
-		fields = append(fields, CardField{IsShort: true, Text: Text{Tag: "lark_md", Content: fmt.Sprintf("**🌿 分支/引用**\n%s", detail.Ref)}})
-	}
-	fields = append(fields, CardField{IsShort: true, Text: Text{Tag: "lark_md", Content: fmt.Sprintf("**👤 触发者**\n%s", senderLink)}})
 
-	// 组装卡片内容
-	card.AddElement("div", nil, fields)
+	if detail.RefName != "" {
+		fields = append(fields, CardField{
+			IsShort: true,
+			Text: &Text{
+				Tag:     "lark_md",
+				Content: fmt.Sprintf("**🌿 引用**\n%s", detail.RefName),
+			},
+		})
+	}
+
+	card.AddDiv("", fields)
 
 	if detail.Text != "" {
 		card.AddDivider()
-		card.AddElement("div", &Text{Tag: "lark_md", Content: detail.Text}, nil)
+		card.AddMarkdown(detail.Text)
 	}
 
 	if detail.URL != "" {
-		card.AddDivider()
 		card.AddAction(Button{
 			Tag:  "button",
 			Text: Text{Tag: "plain_text", Content: "🔗 查看详情"},

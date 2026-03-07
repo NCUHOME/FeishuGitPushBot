@@ -64,20 +64,54 @@ func genSign(secret string, ts int64) (string, error) {
 type Card struct {
 	Header   *CardHeader `json:"header,omitempty"`
 	Elements []any       `json:"elements"`
+	Config   *CardConfig `json:"config,omitempty"`
 }
 
-func (c *Card) AddElement(tag string, text *Text, fields []CardField) {
-	c.Elements = append(c.Elements, CardElement{Tag: tag, Text: text, Fields: fields})
+type CardConfig struct {
+	WideScreenMode bool `json:"wide_screen_mode"`
+	EnableForward  bool `json:"enable_forward"`
 }
 
 func (c *Card) AddDivider() {
 	c.Elements = append(c.Elements, map[string]string{"tag": "hr"})
 }
 
+func (c *Card) AddMarkdown(content string) {
+	c.Elements = append(c.Elements, CardElement{
+		Tag:     "markdown",
+		Content: content,
+	})
+}
+
+func (c *Card) AddDiv(content string, fields []CardField) {
+	el := CardElement{
+		Tag: "div",
+	}
+	if content != "" {
+		el.Text = &Text{Tag: "lark_md", Content: content}
+	}
+	if len(fields) > 0 {
+		el.Fields = fields
+	}
+	c.Elements = append(c.Elements, el)
+}
+
 func (c *Card) AddAction(btn Button) {
 	c.Elements = append(c.Elements, CardAction{
 		Tag:     "action",
 		Actions: []Button{btn},
+	})
+}
+
+func (c *Card) AddNote(content string) {
+	c.Elements = append(c.Elements, map[string]any{
+		"tag": "note",
+		"elements": []any{
+			map[string]string{
+				"tag":     "lark_md",
+				"content": content,
+			},
+		},
 	})
 }
 
@@ -92,14 +126,15 @@ type Text struct {
 }
 
 type CardField struct {
-	IsShort bool `json:"is_short"`
-	Text    Text `json:"text"`
+	IsShort bool  `json:"is_short"`
+	Text    *Text `json:"text"`
 }
 
 type CardElement struct {
-	Tag    string      `json:"tag"`
-	Text   *Text       `json:"text,omitempty"`
-	Fields []CardField `json:"fields,omitempty"`
+	Tag     string      `json:"tag"`
+	Content string      `json:"content,omitempty"`
+	Text    *Text       `json:"text,omitempty"`
+	Fields  []CardField `json:"fields,omitempty"`
 }
 
 type CardAction struct {
