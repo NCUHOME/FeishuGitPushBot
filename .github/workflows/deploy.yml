@@ -35,3 +35,13 @@ jobs:
             -trimpath
             -ldflags='-s -w -extldflags "-static"'
         run: ko build --sbom none --bare --tags latest,${{ github.ref_name }} ./main.go
+
+      - name: Update Workload
+        uses: MultiMx/K8sSetImageAction@v0.8
+        with:
+          server: ${{ secrets.CATTLE_SERVER }}
+          token: ${{ secrets.CATTLE_TOKEN }}
+          namespace: feishu-git-push-bot
+          workload: core
+          wait: true
+          image: "${{ secrets.REGISTRY_URI }}/feishu-git-push-bot/core:${{ github.ref_name }}"
