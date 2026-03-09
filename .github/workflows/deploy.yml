@@ -34,7 +34,7 @@ jobs:
           KO_GFLAGS: >-
             -trimpath
             -ldflags='-s -w -extldflags "-static"'
-        run: ko build --sbom none --bare --tags latest,${{ github.ref_name }} ./main.go
+        run: ko build --sbom none --bare --tags latest,${{ github.ref_name }} .
 
       - name: Update Workload
         uses: MultiMx/K8sSetImageAction@v0.8
