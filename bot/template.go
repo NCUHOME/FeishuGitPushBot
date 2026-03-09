@@ -11,11 +11,11 @@ import (
 )
 
 type EventDetail struct {
-	Title   string `json:"title"`
-	Text    string `json:"text"`
-	URL     string `json:"url"`
-	Ref     string `json:"ref"`      // 原始 Ref markdown
-	RefName string `json:"ref_name"` // 纯文本引用名 (如 main)
+	Title        string `json:"title"`
+	Text         string `json:"text"`
+	URL          string `json:"url"`
+	Ref          string `json:"ref"`      // 原始 Ref markdown
+	RefName      string `json:"ref_name"` // 纯文本引用名 (如 main)
 	RefURL       string `json:"ref_url"`  // 引用的 URL
 	ReplyToTitle string `json:"reply_to_title"`
 	FoldableBody string `json:"foldable_body"`
@@ -46,7 +46,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		repoUrl := e.GetRepo().GetHTMLURL()
 
 		if isTag {
-			d.Title = fmt.Sprintf("🏷️ Tag: %s/%s", repo, refShort)
+			d.Title = fmt.Sprintf("🏷️ New Tag: %s/%s", repo, refShort)
 			d.RefName = refShort
 			d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, refShort)
 			d.URL = d.RefURL
@@ -75,7 +75,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 				if i%2 != 0 {
 					emojiIcon = "🔹"
 				}
-				
+
 				msg := ProcessCommitMessage(c.GetMessage())
 				msg = SafeText(msg, 400)
 
@@ -87,7 +87,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 						shortSHA = sha
 					}
 				}
-				
+
 				hashPart := ""
 				if shortSHA != "" && c.GetURL() != "" {
 					hashPart = fmt.Sprintf(" ([%s](%s))", shortSHA, c.GetURL())
@@ -109,7 +109,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 						authorPart = fmt.Sprintf(" (%s)", name)
 					}
 				}
-				
+
 				lines = append(lines, fmt.Sprintf("%s %s%s%s", emojiIcon, msg, hashPart, authorPart))
 			}
 			d.Text = strings.Join(lines, "\n")
@@ -338,7 +338,7 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 		card.AddDivider()
 		card.AddMarkdown(detail.Text)
 	}
-	
+
 	if detail.FoldableBody != "" {
 		card.AddCollapsiblePanel(detail.FoldableBody)
 	}
@@ -398,16 +398,16 @@ func ContainsAny(s string, subs ...string) bool {
 	return false
 }
 
-// SafeText safely truncates a string to maxRunes, avoiding mid-UTF8-byte slicing, 
+// SafeText safely truncates a string to maxRunes, avoiding mid-UTF8-byte slicing,
 // and replaces < and > with fullwidth variants to prevent Feishu internal markdown parser errors.
 func SafeText(s string, maxRunes int) string {
 	if s == "" {
 		return ""
 	}
-	
+
 	s = strings.ReplaceAll(s, "<", "＜")
 	s = strings.ReplaceAll(s, ">", "＞")
-	
+
 	runes := []rune(s)
 	if len(runes) > maxRunes {
 		return string(runes[:maxRunes]) + "..."
