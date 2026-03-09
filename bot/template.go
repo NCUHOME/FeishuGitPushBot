@@ -26,28 +26,28 @@ type EventDetail struct {
 func ParseEvent(event any, eventType string) EventDetail {
 	d := EventDetail{Title: fmt.Sprintf("🔔 GitHub Event: %s", eventType)}
 
-	if eventType == "create" || eventType == "delete" || eventType == "member" {
-		d.Skip = true
-		return d
-	}
-
 	switch e := event.(type) {
 	case *github.PushEvent:
+		repo := e.GetRepo().GetFullName()
 		ref := e.GetRef()
 		isTag := strings.HasPrefix(ref, "refs/tags/")
+		refShort := ""
+		if isTag {
+			refShort = strings.TrimPrefix(ref, "refs/tags/")
+		} else {
+			refShort = strings.TrimPrefix(ref, "refs/heads/")
+		}
 		repoUrl := e.GetRepo().GetHTMLURL()
 
 		if isTag {
-			tag := strings.TrimPrefix(ref, "refs/tags/")
-			d.Title = "🏷️ New Tag Published"
-			d.RefName = tag
-			d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, tag)
+			d.Title = fmt.Sprintf("🏷️ New Tag: %s/%s", repo, refShort)
+			d.RefName = refShort
+			d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, refShort)
 			d.URL = d.RefURL
 		} else if strings.HasPrefix(ref, "refs/heads/") {
-			branch := strings.TrimPrefix(ref, "refs/heads/")
 			d.Title = "🍏 New commits"
-			d.RefName = branch
-			d.RefURL = fmt.Sprintf("%s/tree/%s", repoUrl, branch)
+			d.RefName = refShort
+			d.RefURL = fmt.Sprintf("%s/tree/%s", repoUrl, refShort)
 		}
 
 		if len(e.Commits) > 0 {
@@ -108,11 +108,11 @@ func ParseEvent(event any, eventType string) EventDetail {
 			}
 			d.Text = strings.Join(lines, "\n")
 		} else if e.GetDeleted() {
-			d.Title = "🗑️ Reference Deleted"
-			d.Text = "该分支或标签已被删除"
+			d.Title = fmt.Sprintf("🗑️ Deleted: %s/%s", repo, refShort)
+			d.Text = "该引用已被删除"
 		} else if e.GetCreated() {
-			d.Title = "🆕 New Reference Created"
-			d.Text = "创建了新的分支或标签"
+			d.Title = fmt.Sprintf("🆕 Created: %s/%s", repo, refShort)
+			d.Text = "创建了新的引用"
 		}
 		if hc := e.GetHeadCommit(); hc != nil {
 			d.URL = hc.GetURL()
@@ -203,14 +203,17 @@ func ParseEvent(event any, eventType string) EventDetail {
 	case *github.WorkflowJobEvent:
 		wj := e.GetWorkflowJob()
 		conclusion := wj.GetConclusion()
-		icon := "🛠️"
+		icon := "⚙️" // 统一使用 Workflow 的图标感
 		if conclusion == "success" {
-			icon = "🟢"
+			icon = "✅"
 		} else if conclusion == "failure" || conclusion == "cancelled" || conclusion == "timed_out" {
-			icon = "🔴"
+			icon = "❌"
 		}
-		d.Title = fmt.Sprintf("%s Job %s", icon, wj.GetStatus())
-		d.Text = fmt.Sprintf("**%s**", wj.GetName())
+
+		// 如果有 WorkflowName 则使用，否则回退
+		name := wj.GetName()
+		d.Title = fmt.Sprintf("%s Workflow: %s", icon, name)
+		d.Text = fmt.Sprintf("Job: **%s** (%s)", name, wj.GetStatus())
 		d.URL = wj.GetHTMLURL()
 
 	case *github.WatchEvent:
@@ -335,21 +338,15 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 	}
 
 	// --- 3. 动态操作按钮 ---
-	if detail.URL != "" {
-		btnText := "🔗 查看详情"
+	// 只有非 Push 事件才显示详情按钮 (Commit 不显示)
+	if detail.URL != "" && !strings.Contains(detail.Title, "commits") && !strings.Contains(detail.Title, "Created:") && !strings.Contains(detail.Title, "Deleted:") && !strings.Contains(detail.Title, "Tag:") {
+		btnText := "查看"
 		btnType := "primary"
 
 		if strings.Contains(detail.Title, "Workflow") {
-			btnText = "🚀 查看流水线"
-			if strings.Contains(detail.Title, "失败") || strings.Contains(detail.Title, "💥") {
+			if strings.Contains(detail.Title, "❌") || strings.Contains(detail.Title, "💥") {
 				btnType = "danger"
 			}
-		} else if strings.Contains(detail.Title, "PullRequest") {
-			btnText = "🔄 评审代码"
-		} else if strings.Contains(detail.Title, "Issue") {
-			btnText = "💬 处理 Issue"
-		} else if strings.Contains(detail.Title, "Release") {
-			btnText = "📦 获取发布包"
 		}
 
 		card.AddAction(Button{
@@ -359,11 +356,11 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 			Type: btnType,
 		})
 
-		// 对于失败的任务，可以额外增加一个快捷查看分支的按钮
+		// 对于失败的任务，可以额外增加一个链接
 		if btnType == "danger" && detail.RefURL != "" {
 			card.AddAction(Button{
 				Tag:  "button",
-				Text: Text{Tag: "plain_text", Content: "🌿 检查分支"},
+				Text: Text{Tag: "plain_text", Content: "查看分支"},
 				Url:  detail.RefURL,
 				Type: "default",
 			})
