@@ -26,6 +26,12 @@ type EventDetail struct {
 func ParseEvent(event any, eventType string) EventDetail {
 	d := EventDetail{Title: fmt.Sprintf("🔔 GitHub Event: %s", eventType)}
 
+	// 屏蔽无实质内容的冗余事件类型
+	if eventType == "create" || eventType == "delete" || eventType == "member" {
+		d.Skip = true
+		return d
+	}
+
 	switch e := event.(type) {
 	case *github.PushEvent:
 		repo := e.GetRepo().GetFullName()
@@ -40,7 +46,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		repoUrl := e.GetRepo().GetHTMLURL()
 
 		if isTag {
-			d.Title = fmt.Sprintf("🏷️ New Tag: %s/%s", repo, refShort)
+			d.Title = fmt.Sprintf("🏷️ Tag: %s/%s", repo, refShort)
 			d.RefName = refShort
 			d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, refShort)
 			d.URL = d.RefURL
@@ -109,10 +115,10 @@ func ParseEvent(event any, eventType string) EventDetail {
 			d.Text = strings.Join(lines, "\n")
 		} else if e.GetDeleted() {
 			d.Title = fmt.Sprintf("🗑️ Deleted: %s/%s", repo, refShort)
-			d.Text = "该引用已被删除"
+			d.Text = ""
 		} else if e.GetCreated() {
 			d.Title = fmt.Sprintf("🆕 Created: %s/%s", repo, refShort)
-			d.Text = "创建了新的引用"
+			d.Text = ""
 		}
 		if hc := e.GetHeadCommit(); hc != nil {
 			d.URL = hc.GetURL()
