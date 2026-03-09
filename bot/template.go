@@ -224,7 +224,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 	case *github.WatchEvent:
 		d.Title = "⭐ New Star!"
-		d.Text = "Your repository has a new stargazer."
+		d.Text = "您的仓库有了新的关注者。"
 
 	case *github.StarEvent:
 		action := e.GetAction()
@@ -376,6 +376,7 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 	return card
 }
 
+// GetTemplate 根据标题中的 emoji 返回对应的卡片颜色模板
 func GetTemplate(title string) string {
 	if ContainsAny(title, "❌", "💥", "💔", "🔴") {
 		return "red"
@@ -389,6 +390,7 @@ func GetTemplate(title string) string {
 	return "blue"
 }
 
+// ContainsAny 检查字符串是否包含任意一个子串
 func ContainsAny(s string, subs ...string) bool {
 	for _, sub := range subs {
 		if strings.Contains(s, sub) {
@@ -398,8 +400,8 @@ func ContainsAny(s string, subs ...string) bool {
 	return false
 }
 
-// SafeText safely truncates a string to maxRunes, avoiding mid-UTF8-byte slicing,
-// and replaces < and > with fullwidth variants to prevent Feishu internal markdown parser errors.
+// SafeText 安全地截断字符串到指定长度，避免 UTF8 字节切分问题，
+// 并将 < 和 > 替换为全角字符，防止飞书内部 Markdown 解析错误。
 func SafeText(s string, maxRunes int) string {
 	if s == "" {
 		return ""
@@ -417,12 +419,12 @@ func SafeText(s string, maxRunes int) string {
 
 var conventionalRegex = regexp.MustCompile(`^(?i)(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert|ref)(\([a-z0-9_-]+\))?(!?):`)
 
-// ProcessCommitMessage converts emoji shortcodes and highlights conventional commit prefixes.
+// ProcessCommitMessage 处理提交信息，转换 emoji 并高亮 Conventional Commit 前缀
 func ProcessCommitMessage(msg string) string {
 	msg = strings.TrimSpace(msg)
-	// 1. Emoji conversion
+	// 1. 转换 Emoji 短代码
 	msg = emoji.Sprint(msg)
-	// 2. Highlighting conventional commits
+	// 2. 高亮 Conventional Commit
 	if loc := conventionalRegex.FindStringIndex(msg); loc != nil {
 		prefix := msg[loc[0]:loc[1]]
 		msg = "**" + prefix + "**" + msg[loc[1]:]

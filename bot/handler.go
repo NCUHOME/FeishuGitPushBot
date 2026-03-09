@@ -47,9 +47,9 @@ func GithubHandler(c *gin.Context) {
 
 	// 状态更新逻辑 (Workflows)
 	if eventType == "workflow_run" || eventType == "workflow_job" {
-		id := ext(m, "workflow_run", "id") // Run ID
+		id := ext(m, "workflow_run", "id") // 运行 ID
 		if id == "" {
-			id = ext(m, "workflow_job", "run_id") // Link Job back to Run card
+			id = ext(m, "workflow_job", "run_id") // 将 Job 关联回其运行卡片
 		}
 
 		if DB != nil && id != "" {
@@ -158,7 +158,7 @@ func GithubHandler(c *gin.Context) {
 		case "workflow_run":
 			githubID = ext(m, "workflow_run", "id")
 		case "workflow_job":
-			githubID = ext(m, "workflow_job", "run_id") // Use Run ID as tracking ID
+			githubID = ext(m, "workflow_job", "run_id") // 使用运行 ID 作为追踪 ID
 		case "push":
 			githubID = fmt.Sprintf("push:%s:%s", repo, ext(m, "ref"))
 		case "pull_request":

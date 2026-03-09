@@ -4,11 +4,13 @@ import (
 	"log"
 	"strings"
 
-	"github.com/joho/godotenv"
+	"github.com/knadh/koanf/parsers/dotenv"
 	"github.com/knadh/koanf/providers/env"
+	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
 )
 
+// Config 结构体定义了所有配置项
 type Config struct {
 	Feishu struct {
 		AppID     string `koanf:"app_id"`
@@ -27,14 +29,15 @@ type Config struct {
 
 var C Config
 
-// LoadConfig 从环境变量解析配置，优先从 .env 文件加载
+// LoadConfig 从 .env 文件和环境变量加载配置
 func LoadConfig() {
-	// 尝试加载 .env 文件 (支持本地运行和测试模式)
-	_ = godotenv.Load()
-	_ = godotenv.Load("../.env")
-
 	k := koanf.New(".")
 
+	// 1. 尝试从当前目录或上级目录加载 .env 文件
+	_ = k.Load(file.Provider(".env"), dotenv.Parser())
+	_ = k.Load(file.Provider("../.env"), dotenv.Parser())
+
+	// 2. 加载环境变量，映射到配置结构体
 	err := k.Load(env.Provider("", ".", func(s string) string {
 		s = strings.ToLower(s)
 		// 统一处理下划线到点号的映射
@@ -49,10 +52,12 @@ func LoadConfig() {
 		}
 		return s
 	}), nil)
+
 	if err != nil {
-		log.Fatalf("无法加载配置: %v", err)
+		log.Fatalf("无法加载环境变量配置: %v", err)
 	}
 
+	// 将配置解析到全局变量 C
 	if err := k.Unmarshal("", &C); err != nil {
 		log.Fatalf("解析配置失败: %v", err)
 	}

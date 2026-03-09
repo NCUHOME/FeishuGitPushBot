@@ -6,8 +6,9 @@ require (
 	github.com/gin-contrib/cors v1.7.6
 	github.com/gin-gonic/gin v1.12.0
 	github.com/google/go-github/v84 v84.0.0
-	github.com/joho/godotenv v1.5.1
+	github.com/knadh/koanf/parsers/dotenv v1.1.1
 	github.com/knadh/koanf/providers/env v1.1.0
+	github.com/knadh/koanf/providers/file v1.2.1
 	github.com/knadh/koanf/v2 v2.3.3
 	github.com/kyokomi/emoji/v2 v2.2.13
 	github.com/larksuite/oapi-sdk-go/v3 v3.5.3
@@ -23,6 +24,7 @@ require (
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.12 // indirect
 	github.com/gin-contrib/sse v1.1.0 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
@@ -33,6 +35,7 @@ require (
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
+	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/knadh/koanf/maps v0.1.2 // indirect

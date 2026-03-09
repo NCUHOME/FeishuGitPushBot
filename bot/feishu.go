@@ -30,6 +30,7 @@ var (
 	larkOnce   sync.Once
 )
 
+// GetLarkClient 获取飞书 SDK 客户端单例
 func GetLarkClient() *lark.Client {
 	larkOnce.Do(func() {
 		larkClient = lark.NewClient(C.Feishu.AppID, C.Feishu.AppSecret)
@@ -233,7 +234,7 @@ func genSign(secret string, ts int64) (string, error) {
 	return base64.StdEncoding.EncodeToString(h.Sum(nil)), nil
 }
 
-// 飞书消息卡片模型 (V2)
+// Card 飞书消息卡片模型 (V2)
 type Card struct {
 	Schema string      `json:"schema"`
 	Header *CardHeader `json:"header,omitempty"`
@@ -241,10 +242,12 @@ type Card struct {
 	Config *CardConfig `json:"config,omitempty"`
 }
 
+// CardBody 消息卡片正文
 type CardBody struct {
 	Elements []any `json:"elements"`
 }
 
+// NewCard 创建一个新的消息卡片
 func NewCard() *Card {
 	return &Card{
 		Schema: "2.0",
@@ -257,20 +260,24 @@ func NewCard() *Card {
 	}
 }
 
+// String 将卡片序列化为 JSON 字符串
 func (c *Card) String() string {
 	b, _ := json.Marshal(c)
 	return string(b)
 }
 
+// CardConfig 消息卡片配置
 type CardConfig struct {
 	WideScreenMode bool `json:"wide_screen_mode"`
 	EnableForward  bool `json:"enable_forward"`
 }
 
+// AddDivider 添加分割线
 func (c *Card) AddDivider() {
 	c.Body.Elements = append(c.Body.Elements, map[string]string{"tag": "hr"})
 }
 
+// AddMarkdown 添加 Markdown 元素
 func (c *Card) AddMarkdown(content string) {
 	c.Body.Elements = append(c.Body.Elements, CardElement{
 		Tag:     "markdown",
@@ -278,23 +285,10 @@ func (c *Card) AddMarkdown(content string) {
 	})
 }
 
+// AddCollapsiblePanel 添加折叠面板
 func (c *Card) AddCollapsiblePanel(content string) {
+	// 飞书 Schema 2.0 支持 collapsible_panel
 	c.Body.Elements = append(c.Body.Elements, map[string]any{
-		"tag": "markdown",
-		"content": content,
-	})
-	// We'll use markdown since Feishu does not natively have an easy 'collapsible_panel' in basic markdown blocks.
-	// Oh wait, Feishu schema 2.0 does have `collapsible_panel`.
-	/*
-	{
-		"tag": "collapsible_panel",
-		"header": { "title": {"tag": "plain_text", "content": "详情"} },
-		"elements": [
-			{"tag": "markdown", "content": "..."}
-		]
-	}
-	*/
-	c.Body.Elements[len(c.Body.Elements)-1] = map[string]any{
 		"tag": "collapsible_panel",
 		"header": map[string]any{
 			"title": map[string]string{
@@ -308,9 +302,10 @@ func (c *Card) AddCollapsiblePanel(content string) {
 				"content": content,
 			},
 		},
-	}
+	})
 }
 
+// AddDiv 添加普通文本块 (支持多列字段)
 func (c *Card) AddDiv(content string, fields []CardField) {
 	el := CardElement{
 		Tag: "div",
@@ -324,13 +319,14 @@ func (c *Card) AddDiv(content string, fields []CardField) {
 	c.Body.Elements = append(c.Body.Elements, el)
 }
 
+// AddAction 添加操作按钮
 func (c *Card) AddAction(btn Button) {
 	btn.Tag = "button"
 	c.Body.Elements = append(c.Body.Elements, btn)
 }
 
+// AddNote 添加备注信息
 func (c *Card) AddNote(elements ...any) {
-	// Schema V2 might not support 'note', fallback to simple text
 	var markdowns []string
 	for _, el := range elements {
 		b, _ := json.Marshal(el)
@@ -347,6 +343,7 @@ func (c *Card) AddNote(elements ...any) {
 	}
 }
 
+// AddNoteText 添加纯文本备注
 func (c *Card) AddNoteText(content string) {
 	c.AddNote(map[string]string{
 		"tag":     "lark_md",
@@ -354,6 +351,7 @@ func (c *Card) AddNoteText(content string) {
 	})
 }
 
+// AddColumnSet 添加分栏布局
 func (c *Card) AddColumnSet(columns ...any) {
 	c.Body.Elements = append(c.Body.Elements, map[string]any{
 		"tag":       "column_set",
@@ -362,6 +360,7 @@ func (c *Card) AddColumnSet(columns ...any) {
 	})
 }
 
+// NewColumn 创建一个新的分栏
 func NewColumn(width string, elements ...any) map[string]any {
 	return map[string]any{
 		"tag":      "column",
@@ -370,6 +369,7 @@ func NewColumn(width string, elements ...any) map[string]any {
 	}
 }
 
+// NewTag 创建一个标签
 func NewTag(text string, color string) map[string]any {
 	return map[string]any{
 		"tag": "tag",
@@ -381,6 +381,7 @@ func NewTag(text string, color string) map[string]any {
 	}
 }
 
+// NewRichText 创建富文本块
 func NewRichText(content ...any) map[string]any {
 	return map[string]any{
 		"tag": "div",
@@ -391,6 +392,7 @@ func NewRichText(content ...any) map[string]any {
 	}
 }
 
+// NewTextElement 创建文本元素
 func NewTextElement(content string, isLink bool, url string) map[string]any {
 	if isLink {
 		return map[string]any{
@@ -405,21 +407,25 @@ func NewTextElement(content string, isLink bool, url string) map[string]any {
 	}
 }
 
+// CardHeader 卡片标题部分
 type CardHeader struct {
 	Title    Text   `json:"title"`
 	Template string `json:"template,omitempty"`
 }
 
+// Text 文本对象
 type Text struct {
 	Tag     string `json:"tag"`
 	Content string `json:"content"`
 }
 
+// CardField 卡片字段部分
 type CardField struct {
 	IsShort bool  `json:"is_short"`
 	Text    *Text `json:"text"`
 }
 
+// CardElement 卡片元素基础结构
 type CardElement struct {
 	Tag     string      `json:"tag"`
 	Content string      `json:"content,omitempty"`
@@ -427,11 +433,13 @@ type CardElement struct {
 	Fields  []CardField `json:"fields,omitempty"`
 }
 
+// CardAction 卡片交互操作部分
 type CardAction struct {
 	Tag     string   `json:"tag"`
 	Actions []Button `json:"actions"`
 }
 
+// Button 按钮组件
 type Button struct {
 	Tag  string `json:"tag"`
 	Text Text   `json:"text"`
