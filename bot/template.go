@@ -25,29 +25,32 @@ type EventDetail struct {
 
 // ParseEvent 解析 GitHub 事件为极简明了的 Detail
 func ParseEvent(event any, eventType string) EventDetail {
-	d := EventDetail{Title: fmt.Sprintf("🔔 GitHub Event: %s", eventType)}
+	d := EventDetail{
+		Title: fmt.Sprintf("🔔 GitHub 事件: %s", eventType),
+		Skip:  false, // 默认不跳过任何事件
+	}
 
-	// 屏蔽无实质内容的冗余事件类型
+	// 屏蔽已知无实质内容的冗余事件类型 (可选)
 	if eventType == "member" {
-		d.Skip = true
-		return d
+		// d.Skip = true
 	}
 
 	switch e := event.(type) {
 	case *github.PushEvent:
 		repo := e.GetRepo().GetFullName()
 		ref := e.GetRef()
+		// 更鲁棒的标签检测：检查 refs/tags/ 前缀或 ref 本身
 		isTag := strings.HasPrefix(ref, "refs/tags/")
 		refShort := ""
 		if isTag {
 			refShort = strings.TrimPrefix(ref, "refs/tags/")
+			d.IsTag = true
 		} else {
 			refShort = strings.TrimPrefix(ref, "refs/heads/")
 		}
 		repoUrl := e.GetRepo().GetHTMLURL()
 
 		if isTag {
-			d.IsTag = true
 			d.Title = fmt.Sprintf("🏷️ New Tag: %s/%s", repo, refShort)
 			d.RefName = refShort
 			d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, refShort)
@@ -119,12 +122,14 @@ func ParseEvent(event any, eventType string) EventDetail {
 			if isTag {
 				d.Title = fmt.Sprintf("🗑️ Tag Deleted: %s/%s", repo, refShort)
 			} else {
-				d.Title = fmt.Sprintf("🗑️ Deleted: %s/%s", repo, refShort)
+				d.Title = fmt.Sprintf("🗑️ Branch Deleted: %s/%s", repo, refShort)
 			}
 			d.Text = ""
 		} else if e.GetCreated() {
-			if !isTag {
-				d.Title = fmt.Sprintf("🆕 Created: %s/%s", repo, refShort)
+			if isTag {
+				d.Title = fmt.Sprintf("🏷️ New Tag: %s/%s", repo, refShort)
+			} else {
+				d.Title = fmt.Sprintf("🆕 New Branch: %s/%s", repo, refShort)
 			}
 			d.Text = ""
 		}
@@ -262,7 +267,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		refType := e.GetRefType() // "branch" or "tag"
 		repoUrl := e.GetRepo().GetHTMLURL()
 
-		if refType == "tag" {
+		if refType == "tag" || strings.HasPrefix(ref, "v") { // 增加容错
 			d.IsTag = true
 			d.Title = fmt.Sprintf("🏷️ New Tag: %s/%s", repo, ref)
 			d.RefName = ref
@@ -278,15 +283,16 @@ func ParseEvent(event any, eventType string) EventDetail {
 	case *github.DeleteEvent:
 		repo := e.GetRepo().GetFullName()
 		ref := e.GetRef()
-		refType := e.GetRefType() // "branch" or "tag"
+		refType := e.GetRefType()
 
-		if refType == "tag" {
+		if refType == "tag" || strings.HasPrefix(ref, "v") {
 			d.IsTag = true
 			d.Title = fmt.Sprintf("🗑️ Tag Deleted: %s/%s", repo, ref)
+			d.RefName = ref
 		} else {
 			d.Title = fmt.Sprintf("🗑️ Branch Deleted: %s/%s", repo, ref)
+			d.RefName = ref
 		}
-		d.RefName = ref
 		d.Text = ""
 	}
 	return d
@@ -312,11 +318,11 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 		if link == "" {
 			link = repoUrl
 		}
-		icon := "🌿"
 		if detail.IsTag {
-			icon = "🏷️"
+			refPart = fmt.Sprintf(" / 🏷️ **Tag** [%s](%s)", detail.RefName, link)
+		} else {
+			refPart = fmt.Sprintf(" / 🌿 **Branch** [%s](%s)", detail.RefName, link)
 		}
-		refPart = fmt.Sprintf(" / %s [%s](%s)", icon, detail.RefName, link)
 	}
 	repoAndBranchText := repoPart + refPart + " / "
 	senderText := fmt.Sprintf("[%s](%s)", sender, senderUrl)
