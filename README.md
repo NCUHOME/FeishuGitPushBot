@@ -64,7 +64,11 @@ docker run -d -p 8080:8080 \
 - **Payload URL**: `https://<你的域名>/github/webhook`
 - **Content type**: `application/json`
 - **Secret**: 设置为你的 `GITHUB_KEY`
-- **Events**: 建议勾选 `Push`, `Pull Request`, `Issues`, `Workflow runs`, `Release`, `Issue comments` 等。
+- **Events**: 选择 `Let me select individual events`，建议勾选以下项以获得最佳体验：
+  - **核心开发**: `Pushes`, `Pull requests`, `Issues`, `Releases`
+  - **CI/CD 监控**: `Workflow runs`, `Workflow jobs` (必须开启以支持状态实时更新)
+  - **互动交流**: `Issue comments`, `Pull request reviews`, `Pull request review comments`
+  - **社交反馈**: `Stars`, `Forks`, `Watches` (可选)
 
 ## 📂 项目结构
 

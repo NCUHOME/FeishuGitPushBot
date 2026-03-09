@@ -180,7 +180,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		icon := "⚙️"
 		if conclusion == "success" {
 			icon = "✅"
-		} else if conclusion == "failure" {
+		} else if conclusion == "failure" || conclusion == "cancelled" || conclusion == "timed_out" {
 			icon = "❌"
 		} else if status == "in_progress" {
 			icon = "⏳"
@@ -201,7 +201,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		icon := "🛠️"
 		if conclusion == "success" {
 			icon = "🟢"
-		} else if conclusion == "failure" {
+		} else if conclusion == "failure" || conclusion == "cancelled" || conclusion == "timed_out" {
 			icon = "🔴"
 		}
 		d.Title = fmt.Sprintf("%s Job %s", icon, wj.GetStatus())
