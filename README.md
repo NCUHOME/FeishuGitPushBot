@@ -69,6 +69,9 @@ docker run -d -p 8080:8080 \
   - **CI/CD 监控**: `Workflow runs`, `Workflow jobs` (必须开启以支持状态实时更新)
   - **互动交流**: `Issue comments`, `Pull request reviews`, `Pull request review comments`
   - **社交反馈**: `Stars`, `Forks`, `Watches` (可选)
+  
+> [!IMPORTANT]
+> **注意**: 请勿勾选 `Branch or tag creation` 和 `Branch or tag deletion` 事件，这些信息已包含在 `Push` 事件中，重复勾选会导致冗余且无内容的通知。
 
 ## 📂 项目结构
 

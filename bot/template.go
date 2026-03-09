@@ -26,6 +26,11 @@ type EventDetail struct {
 func ParseEvent(event any, eventType string) EventDetail {
 	d := EventDetail{Title: fmt.Sprintf("🔔 GitHub Event: %s", eventType)}
 
+	if eventType == "create" || eventType == "delete" || eventType == "member" {
+		d.Skip = true
+		return d
+	}
+
 	switch e := event.(type) {
 	case *github.PushEvent:
 		ref := e.GetRef()
