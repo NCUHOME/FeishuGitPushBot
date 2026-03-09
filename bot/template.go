@@ -20,6 +20,7 @@ type EventDetail struct {
 	ReplyToTitle string `json:"reply_to_title"`
 	FoldableBody string `json:"foldable_body"`
 	Skip         bool   `json:"skip"`
+	IsTag        bool   `json:"is_tag"`
 }
 
 // ParseEvent 解析 GitHub 事件为极简明了的 Detail
@@ -27,7 +28,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 	d := EventDetail{Title: fmt.Sprintf("🔔 GitHub Event: %s", eventType)}
 
 	// 屏蔽无实质内容的冗余事件类型
-	if eventType == "create" || eventType == "delete" || eventType == "member" {
+	if eventType == "member" {
 		d.Skip = true
 		return d
 	}
@@ -46,6 +47,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		repoUrl := e.GetRepo().GetHTMLURL()
 
 		if isTag {
+			d.IsTag = true
 			d.Title = fmt.Sprintf("🏷️ New Tag: %s/%s", repo, refShort)
 			d.RefName = refShort
 			d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, refShort)
@@ -114,10 +116,16 @@ func ParseEvent(event any, eventType string) EventDetail {
 			}
 			d.Text = strings.Join(lines, "\n")
 		} else if e.GetDeleted() {
-			d.Title = fmt.Sprintf("🗑️ Deleted: %s/%s", repo, refShort)
+			if isTag {
+				d.Title = fmt.Sprintf("🗑️ Tag Deleted: %s/%s", repo, refShort)
+			} else {
+				d.Title = fmt.Sprintf("🗑️ Deleted: %s/%s", repo, refShort)
+			}
 			d.Text = ""
 		} else if e.GetCreated() {
-			d.Title = fmt.Sprintf("🆕 Created: %s/%s", repo, refShort)
+			if !isTag {
+				d.Title = fmt.Sprintf("🆕 Created: %s/%s", repo, refShort)
+			}
 			d.Text = ""
 		}
 		if hc := e.GetHeadCommit(); hc != nil {
@@ -247,6 +255,39 @@ func ParseEvent(event any, eventType string) EventDetail {
 			pages = append(pages, fmt.Sprintf("• [%s](%s) (%s)", p.GetTitle(), p.GetHTMLURL(), p.GetAction()))
 		}
 		d.Text = strings.Join(pages, "\n")
+
+	case *github.CreateEvent:
+		repo := e.GetRepo().GetFullName()
+		ref := e.GetRef()
+		refType := e.GetRefType() // "branch" or "tag"
+		repoUrl := e.GetRepo().GetHTMLURL()
+
+		if refType == "tag" {
+			d.IsTag = true
+			d.Title = fmt.Sprintf("🏷️ New Tag: %s/%s", repo, ref)
+			d.RefName = ref
+			d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, ref)
+			d.URL = d.RefURL
+		} else {
+			d.Title = fmt.Sprintf("🆕 New Branch: %s/%s", repo, ref)
+			d.RefName = ref
+			d.RefURL = fmt.Sprintf("%s/tree/%s", repoUrl, ref)
+		}
+		d.Text = ""
+
+	case *github.DeleteEvent:
+		repo := e.GetRepo().GetFullName()
+		ref := e.GetRef()
+		refType := e.GetRefType() // "branch" or "tag"
+
+		if refType == "tag" {
+			d.IsTag = true
+			d.Title = fmt.Sprintf("🗑️ Tag Deleted: %s/%s", repo, ref)
+		} else {
+			d.Title = fmt.Sprintf("🗑️ Branch Deleted: %s/%s", repo, ref)
+		}
+		d.RefName = ref
+		d.Text = ""
 	}
 	return d
 }
@@ -271,7 +312,11 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 		if link == "" {
 			link = repoUrl
 		}
-		refPart = fmt.Sprintf(" / 🌿 [%s](%s)", detail.RefName, link)
+		icon := "🌿"
+		if detail.IsTag {
+			icon = "🏷️"
+		}
+		refPart = fmt.Sprintf(" / %s [%s](%s)", icon, detail.RefName, link)
 	}
 	repoAndBranchText := repoPart + refPart + " / "
 	senderText := fmt.Sprintf("[%s](%s)", sender, senderUrl)
@@ -345,7 +390,7 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 
 	// --- 3. 动态操作按钮 ---
 	// 只有非 Push 事件才显示详情按钮 (Commit 不显示)
-	if detail.URL != "" && !strings.Contains(detail.Title, "commits") && !strings.Contains(detail.Title, "Created:") && !strings.Contains(detail.Title, "Deleted:") && !strings.Contains(detail.Title, "Tag:") {
+	if detail.URL != "" && !strings.Contains(detail.Title, "commits") && !strings.Contains(detail.Title, "Created:") && !strings.Contains(detail.Title, "Deleted:") {
 		btnText := "查看"
 		btnType := "primary"
 
