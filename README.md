@@ -18,18 +18,29 @@
 
 ### 1. 环境变量配置
 
-程序通过环境变量加载配置：
+程序通过环境变量加载配置，建议复制 `.env.example` 为 `.env` 进行配置：
 
 | 环境变量 | 说明 | 示例 |
 | :--- | :--- | :--- |
-| `FEISHU_WEBHOOK` | 飞书机器人 Webhook 地址 | `https://open.feishu.cn/open-apis/bot/v2/hook/...` |
+| `FEISHU_WEBHOOK` | 飞书自定义机器人 Webhook 地址 | `https://open.feishu.cn/open-apis/bot/v2/hook/...` |
 | `FEISHU_SECRET` | 飞书机器人安全校验密钥 | `your_feishu_secret` |
 | `GITHUB_KEY` | GitHub Webhook Secret | `your_github_secret` |
+| `FEISHU_APP_ID` | (可选) 飞书应用 App ID | `cli_xxx` |
+| `FEISHU_APP_SECRET` | (可选) 飞书应用 App Secret | `xxx` |
+| `DATABASE_URL` | (可选) 数据库连接串 | `sqlite://feishu.db` |
+
+> [!TIP]
+> **为什么要配置数据库和 App ID？**
+> 配置后，机器人将支持：
+> 1. **消息合并**：5 分钟内的连续推送将合并为一条消息。
+> 2. **状态更新**：GitHub Actions 的进度会实时更新在同一条消息中，而不是重复发送。
+> 3. **关联回复**：评论（Issue/PR）将以话题模式回复到对应的推送消息下。
 
 ### 2. 本地运行
 
 ```bash
-# 1. 复制 .env 示例并配置 (如果有) 或直接设置环境变量
+# 1. 复制配置
+cp .env.example .env
 # 2. 获取依赖
 go mod tidy
 # 3. 运行项目
@@ -38,15 +49,11 @@ go run main.go
 
 ### 3. Docker 部署
 
-使用我们优化过的多阶段构建 Dockerfile：
-
 ```bash
 docker build -t feishu-git-push-bot .
 
 docker run -d -p 8080:8080 \
-  -e FEISHU_WEBHOOK="xxx" \
-  -e FEISHU_SECRET="xxx" \
-  -e GITHUB_KEY="xxx" \
+  --env-file .env \
   feishu-git-push-bot
 ```
 
@@ -57,7 +64,7 @@ docker run -d -p 8080:8080 \
 - **Payload URL**: `https://<你的域名>/github/webhook`
 - **Content type**: `application/json`
 - **Secret**: 设置为你的 `GITHUB_KEY`
-- **Events**: 建议勾选 `Push`, `Pull Request`, `Issues`, `Workflow runs`, `Releases` 等。
+- **Events**: 建议勾选 `Push`, `Pull Request`, `Issues`, `Workflow runs`, `Release`, `Issue comments` 等。
 
 ## 📂 项目结构
 
@@ -65,11 +72,22 @@ docker run -d -p 8080:8080 \
 .
 ├── bot/                # 核心逻辑
 │   ├── config.go       # 配置解析
-│   ├── feishu.go       # 飞书 API 交互与卡片 DSL
-│   ├── handler.go      # GitHub Webhook 解析与处理
+│   ├── db.go           # 数据库持久化 (Bun ORM)
+│   ├── feishu.go       # 飞书 API 交互与消息发送
+│   ├── handler.go      # GitHub Webhook 解析与路由逻辑
+│   ├── template.go     # 消息模版与卡片构建
 │   └── router.go       # Gin 路由定义
 ├── main.go             # 入口文件
+├── .env.example        # 配置示例
 └── Dockerfile          # 安全精简的容器配置
+```
+
+## 🧪 测试
+
+你可以使用内置的测试脚本模拟 GitHub Webhook 事件：
+
+```bash
+go test ./bot -v -run TestSendAllMessages
 ```
 
 ## 📜 许可证
