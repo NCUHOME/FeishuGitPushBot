@@ -35,9 +35,9 @@ type MessageRecord struct {
 type ImageCache struct {
 	bun.BaseModel `bun:"table:image_caches,alias:ic"`
 
-	URL      string    `bun:",pk"`
-	ImgKey   string    `bun:",notnull"`
-	ExpireAt time.Time `bun:",nullzero"` // 可选：用于过期清理
+	URL       string    `bun:",pk"`
+	ImgKey    string    `bun:",notnull"`
+	UpdatedAt time.Time `bun:",nullzero,notnull,default:current_timestamp"`
 }
 
 // InitDB 初始化数据库连接并执行自动迁移

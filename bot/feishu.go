@@ -52,7 +52,11 @@ func GetImageKey(ctx context.Context, url string) string {
 	var cache ImageCache
 	if DB != nil {
 		if err := DB.NewSelect().Model(&cache).Where("url = ?", url).Scan(ctx); err == nil {
-			return cache.ImgKey
+			// 如果缓存未超过 24 小时，则直接返回
+			if time.Since(cache.UpdatedAt) < 24*time.Hour {
+				return cache.ImgKey
+			}
+			log.Printf("图片缓存已过期 (超过 24 小时)，重新上传: %s", url)
 		}
 	}
 
@@ -60,12 +64,19 @@ func GetImageKey(ctx context.Context, url string) string {
 	imageRes, err := http.R().Get(url)
 	if err != nil || imageRes.IsError() {
 		log.Printf("下载图片失败: %s, err: %v, status: %d", url, err, imageRes.StatusCode())
+		// 如果下载失败但我们有旧缓存，勉强用旧的
+		if cache.ImgKey != "" {
+			return cache.ImgKey
+		}
 		return ""
 	}
 	defer imageRes.Body.Close()
 	imgData, err := io.ReadAll(imageRes.Body)
 	if err != nil {
 		log.Printf("读取图片内容失败: %v", err)
+		if cache.ImgKey != "" {
+			return cache.ImgKey
+		}
 		return ""
 	}
 
@@ -98,23 +109,35 @@ func GetImageKey(ctx context.Context, url string) string {
 
 	if err != nil {
 		log.Printf("SDK 上传图片最终失败: %v", err)
+		if cache.ImgKey != "" {
+			return cache.ImgKey
+		}
 		return ""
 	}
 	if !resp.Success() {
 		log.Printf("飞书上传图片最终失败: code=%d, msg=%s, request_id=%s", resp.Code, resp.Msg, resp.RequestId())
+		if cache.ImgKey != "" {
+			return cache.ImgKey
+		}
 		return ""
 	}
 
 	imgKey := *resp.Data.ImageKey
 	log.Printf("图片上传成功: url=%s, img_key=%s", url, imgKey)
 
-	// 存入缓存
+	// 存入或更新缓存
 	if DB != nil {
 		cache = ImageCache{
-			URL:    url,
-			ImgKey: imgKey,
+			URL:       url,
+			ImgKey:    imgKey,
+			UpdatedAt: time.Now(),
 		}
-		_, _ = DB.NewInsert().Model(&cache).Exec(context.Background())
+		_, _ = DB.NewInsert().
+			Model(&cache).
+			On("CONFLICT (url) DO UPDATE").
+			Set("img_key = EXCLUDED.img_key").
+			Set("updated_at = EXCLUDED.updated_at").
+			Exec(context.Background())
 	}
 
 	return imgKey
