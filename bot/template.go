@@ -267,7 +267,9 @@ func ParseEvent(event any, eventType string) EventDetail {
 		refType := e.GetRefType() // "branch" or "tag"
 		repoUrl := e.GetRepo().GetHTMLURL()
 
-		if refType == "tag" || strings.HasPrefix(ref, "v") { // 增加容错
+		if refType == "tag" {
+			d.Skip = true // 跳过，因为 Push 事件也会触发 Tag 通知，避免重复
+		} else if strings.HasPrefix(ref, "v") { // 仅为了兼容性的容错，如果是分支但以 v 开头则不跳
 			d.IsTag = true
 			d.Title = fmt.Sprintf("🏷️ New Tag: %s/%s", repo, ref)
 			d.RefName = ref
@@ -285,7 +287,9 @@ func ParseEvent(event any, eventType string) EventDetail {
 		ref := e.GetRef()
 		refType := e.GetRefType()
 
-		if refType == "tag" || strings.HasPrefix(ref, "v") {
+		if refType == "tag" {
+			d.Skip = true // 跳过，避免与 Push 事件重复
+		} else if strings.HasPrefix(ref, "v") {
 			d.IsTag = true
 			d.Title = fmt.Sprintf("🗑️ Tag Deleted: %s/%s", repo, ref)
 			d.RefName = ref
