@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -40,7 +41,7 @@ func GetLarkClient() *lark.Client {
 
 
 
-// GetImageKey 转换外部 URL 为飞书 img_key (带缓存)
+// GetImageKey 转换外部 URL 为飞书 img_key (带缓存并支持异步更新)
 func GetImageKey(ctx context.Context, url string) string {
 	if url == "" {
 		return ""
@@ -52,40 +53,34 @@ func GetImageKey(ctx context.Context, url string) string {
 	var cache ImageCache
 	if DB != nil {
 		if err := DB.NewSelect().Model(&cache).Where("url = ?", url).Scan(ctx); err == nil {
-			// 如果缓存未超过 24 小时，则直接返回
-			if time.Since(cache.UpdatedAt) < 24*time.Hour {
-				return cache.ImgKey
-			}
-			log.Printf("图片缓存已过期 (超过 24 小时)，重新上传: %s", url)
+			// 如果已有缓存，无论是多久前的都直接返回，保证消息响应极速
+			// 在后台异步刷新，看看头像有没有变
+			go refreshImageCache(url, cache)
+			return cache.ImgKey
 		}
 	}
 
-	// 下载图片并读取字节 (依然使用 resty 下载)
+	// 第一次遇到此 URL，同步上传以获取 img_key
+	return syncUploadImage(ctx, url)
+}
+
+// syncUploadImage 同步执行下载、哈希计算并上传到飞书
+func syncUploadImage(ctx context.Context, url string) string {
+	// 下载图片
 	imageRes, err := http.R().Get(url)
 	if err != nil || imageRes.IsError() {
-		log.Printf("下载图片失败: %s, err: %v, status: %d", url, err, imageRes.StatusCode())
-		// 如果下载失败但我们有旧缓存，勉强用旧的
-		if cache.ImgKey != "" {
-			return cache.ImgKey
-		}
+		log.Printf("同步下载图片失败: %s, err: %v", url, err)
 		return ""
 	}
 	defer imageRes.Body.Close()
-	imgData, err := io.ReadAll(imageRes.Body)
-	if err != nil {
-		log.Printf("读取图片内容失败: %v", err)
-		if cache.ImgKey != "" {
-			return cache.ImgKey
-		}
-		return ""
-	}
+	imgData, _ := io.ReadAll(imageRes.Body)
+	hash := fmt.Sprintf("%x", md5.Sum(imgData))
 
 	client := GetLarkClient()
 	var resp *larkim.CreateImageResp
 
-	// 添加重试逻辑，时间久一点，应对 context canceled 等临时错误
+	// 重试逻辑
 	for i := 0; i < 3; i++ {
-		// 使用独立于请求的 Background Context，并设置较长的超时
 		uploadCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		resp, err = client.Im.Image.Create(uploadCtx, larkim.NewCreateImageReqBuilder().
 			Body(larkim.NewCreateImageReqBodyBuilder().
@@ -94,53 +89,84 @@ func GetImageKey(ctx context.Context, url string) string {
 				Build()).
 			Build())
 		cancel()
-
 		if err == nil && resp.Success() {
 			break
 		}
-
-		errMsg := ""
-		if resp != nil {
-			errMsg = resp.Msg
-		}
-		log.Printf("飞书上传图片失败 (第 %d 次尝试): err=%v, msg=%s", i+1, err, errMsg)
 		time.Sleep(time.Duration(i+1) * 3 * time.Second)
 	}
 
-	if err != nil {
-		log.Printf("SDK 上传图片最终失败: %v", err)
-		if cache.ImgKey != "" {
-			return cache.ImgKey
-		}
-		return ""
-	}
-	if !resp.Success() {
-		log.Printf("飞书上传图片最终失败: code=%d, msg=%s, request_id=%s", resp.Code, resp.Msg, resp.RequestId())
-		if cache.ImgKey != "" {
-			return cache.ImgKey
-		}
+	if err != nil || (resp != nil && !resp.Success()) {
 		return ""
 	}
 
 	imgKey := *resp.Data.ImageKey
-	log.Printf("图片上传成功: url=%s, img_key=%s", url, imgKey)
-
-	// 存入或更新缓存
 	if DB != nil {
-		cache = ImageCache{
+		cache := ImageCache{
 			URL:       url,
 			ImgKey:    imgKey,
+			Hash:      hash,
 			UpdatedAt: time.Now(),
 		}
-		_, _ = DB.NewInsert().
-			Model(&cache).
-			On("CONFLICT (url) DO UPDATE").
+		_, _ = DB.NewInsert().Model(&cache).On("CONFLICT (url) DO UPDATE").
 			Set("img_key = EXCLUDED.img_key").
+			Set("hash = EXCLUDED.hash").
 			Set("updated_at = EXCLUDED.updated_at").
 			Exec(context.Background())
 	}
-
 	return imgKey
+}
+
+// refreshImageCache 后台执行图片变更检查
+func refreshImageCache(url string, oldCache ImageCache) {
+	// 为了省流和防抖：如果 1 小时内检查过，就不再检查
+	if time.Since(oldCache.UpdatedAt) < 1*time.Hour {
+		return
+	}
+
+	// 下载图片并算哈希
+	imageRes, err := http.R().Get(url)
+	if err != nil || imageRes.IsError() {
+		return
+	}
+	defer imageRes.Body.Close()
+	imgData, _ := io.ReadAll(imageRes.Body)
+	newHash := fmt.Sprintf("%x", md5.Sum(imgData))
+
+	// 如果哈希没变，只刷新一下更新时间，免得下次继续检查
+	if newHash == oldCache.Hash {
+		if DB != nil {
+			_, _ = DB.NewUpdate().Model((*ImageCache)(nil)).
+				Set("updated_at = ?", time.Now()).
+				Where("url = ?", url).
+				Exec(context.Background())
+		}
+		return
+	}
+
+	// 哈希变了，说明头像换了，重新上传获取新 key
+	log.Printf("检测到头像内容变更，正在后台更新 img_key: %s", url)
+	client := GetLarkClient()
+	uploadCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	resp, err := client.Im.Image.Create(uploadCtx, larkim.NewCreateImageReqBuilder().
+		Body(larkim.NewCreateImageReqBodyBuilder().
+			ImageType(larkim.ImageTypeMessage).
+			Image(bytes.NewReader(imgData)).
+			Build()).
+		Build())
+
+	if err == nil && resp.Success() {
+		newKey := *resp.Data.ImageKey
+		if DB != nil {
+			_, _ = DB.NewUpdate().Model((*ImageCache)(nil)).
+				Set("img_key = ?", newKey).
+				Set("hash = ?", newHash).
+				Set("updated_at = ?", time.Now()).
+				Where("url = ?", url).
+				Exec(context.Background())
+			log.Printf("头像后台更新成功: %s -> %s", url, newKey)
+		}
+	}
 }
 
 // SendToChat 发送消息到指定群组，返回消息ID

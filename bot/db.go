@@ -37,6 +37,7 @@ type ImageCache struct {
 
 	URL       string    `bun:",pk"`
 	ImgKey    string    `bun:",notnull"`
+    Hash      string    `bun:",nullzero"` // 图片内容的哈希值 (MD5)
 	UpdatedAt time.Time `bun:",nullzero,notnull,default:current_timestamp"`
 }
 
