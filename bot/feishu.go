@@ -70,19 +70,38 @@ func GetImageKey(ctx context.Context, url string) string {
 	}
 
 	client := GetLarkClient()
-	resp, err := client.Im.Image.Create(ctx, larkim.NewCreateImageReqBuilder().
-		Body(larkim.NewCreateImageReqBodyBuilder().
-			ImageType(larkim.ImageTypeMessage).
-			Image(bytes.NewReader(imgData)).
-			Build()).
-		Build())
+	var resp *larkim.CreateImageResp
+
+	// 添加重试逻辑，时间久一点，应对 context canceled 等临时错误
+	for i := 0; i < 3; i++ {
+		// 使用独立于请求的 Background Context，并设置较长的超时
+		uploadCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		resp, err = client.Im.Image.Create(uploadCtx, larkim.NewCreateImageReqBuilder().
+			Body(larkim.NewCreateImageReqBodyBuilder().
+				ImageType(larkim.ImageTypeMessage).
+				Image(bytes.NewReader(imgData)).
+				Build()).
+			Build())
+		cancel()
+
+		if err == nil && resp.Success() {
+			break
+		}
+
+		errMsg := ""
+		if resp != nil {
+			errMsg = resp.Msg
+		}
+		log.Printf("飞书上传图片失败 (第 %d 次尝试): err=%v, msg=%s", i+1, err, errMsg)
+		time.Sleep(time.Duration(i+1) * 3 * time.Second)
+	}
 
 	if err != nil {
-		log.Printf("SDK 上传图片失败: %v", err)
+		log.Printf("SDK 上传图片最终失败: %v", err)
 		return ""
 	}
 	if !resp.Success() {
-		log.Printf("飞书上传图片失败: code=%d, msg=%s, request_id=%s", resp.Code, resp.Msg, resp.RequestId())
+		log.Printf("飞书上传图片最终失败: code=%d, msg=%s, request_id=%s", resp.Code, resp.Msg, resp.RequestId())
 		return ""
 	}
 
@@ -95,7 +114,7 @@ func GetImageKey(ctx context.Context, url string) string {
 			URL:    url,
 			ImgKey: imgKey,
 		}
-		_, _ = DB.NewInsert().Model(&cache).Exec(ctx)
+		_, _ = DB.NewInsert().Model(&cache).Exec(context.Background())
 	}
 
 	return imgKey
@@ -115,15 +134,26 @@ func SendToChat(chatID string, card *Card) (string, error) {
 
 // UpdateMessage 更新已发送的消息
 func UpdateMessage(messageID string, card *Card) error {
-	ctx := context.Background()
 	client := GetLarkClient()
 
-	resp, err := client.Im.Message.Patch(ctx, larkim.NewPatchMessageReqBuilder().
-		MessageId(messageID).
-		Body(larkim.NewPatchMessageReqBodyBuilder().
-			Content(card.String()).
-			Build()).
-		Build())
+	var resp *larkim.PatchMessageResp
+	var err error
+
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		resp, err = client.Im.Message.Patch(ctx, larkim.NewPatchMessageReqBuilder().
+			MessageId(messageID).
+			Body(larkim.NewPatchMessageReqBodyBuilder().
+				Content(card.String()).
+				Build()).
+			Build())
+		cancel()
+
+		if err == nil && resp.Success() {
+			return nil
+		}
+		time.Sleep(time.Duration(i+1) * 2 * time.Second)
+	}
 
 	if err != nil {
 		return err
@@ -140,17 +170,27 @@ func ReplyToMessage(parentID string, card *Card) (string, error) {
 }
 
 func sendMessage(chatID, parentID string, card *Card) (string, error) {
-	ctx := context.Background()
 	client := GetLarkClient()
 
 	if parentID != "" {
-		resp, err := client.Im.Message.Reply(ctx, larkim.NewReplyMessageReqBuilder().
-			MessageId(parentID).
-			Body(larkim.NewReplyMessageReqBodyBuilder().
-				MsgType(larkim.MsgTypeInteractive).
-				Content(card.String()).
-				Build()).
-			Build())
+		var resp *larkim.ReplyMessageResp
+		var err error
+		for i := 0; i < 3; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			resp, err = client.Im.Message.Reply(ctx, larkim.NewReplyMessageReqBuilder().
+				MessageId(parentID).
+				Body(larkim.NewReplyMessageReqBodyBuilder().
+					MsgType(larkim.MsgTypeInteractive).
+					Content(card.String()).
+					Build()).
+				Build())
+			cancel()
+
+			if err == nil && resp.Success() {
+				return *resp.Data.MessageId, nil
+			}
+			time.Sleep(time.Duration(i+1) * 2 * time.Second)
+		}
 		if err != nil {
 			return "", err
 		}
@@ -167,14 +207,25 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 		return "", fmt.Errorf("未指定目标聊天 ID (CHAT_ID)")
 	}
 
-	resp, err := client.Im.Message.Create(ctx, larkim.NewCreateMessageReqBuilder().
-		ReceiveIdType(larkim.ReceiveIdTypeChatId).
-		Body(larkim.NewCreateMessageReqBodyBuilder().
-			ReceiveId(chatID).
-			MsgType(larkim.MsgTypeInteractive).
-			Content(card.String()).
-			Build()).
-		Build())
+	var resp *larkim.CreateMessageResp
+	var err error
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		resp, err = client.Im.Message.Create(ctx, larkim.NewCreateMessageReqBuilder().
+			ReceiveIdType(larkim.ReceiveIdTypeChatId).
+			Body(larkim.NewCreateMessageReqBodyBuilder().
+				ReceiveId(chatID).
+				MsgType(larkim.MsgTypeInteractive).
+				Content(card.String()).
+				Build()).
+			Build())
+		cancel()
+
+		if err == nil && resp.Success() {
+			return *resp.Data.MessageId, nil
+		}
+		time.Sleep(time.Duration(i+1) * 2 * time.Second)
+	}
 
 	if err != nil {
 		return "", err
