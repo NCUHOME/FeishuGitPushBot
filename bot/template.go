@@ -202,12 +202,15 @@ func ParseEvent(event any, eventType string) EventDetail {
 		conclusion := wr.GetConclusion()
 
 		icon := "⚙️"
-		if conclusion == "success" {
+		switch conclusion {
+		case "success":
 			icon = "✅"
-		} else if conclusion == "failure" || conclusion == "cancelled" || conclusion == "timed_out" {
+		case "failure", "cancelled", "timed_out":
 			icon = "❌"
-		} else if status == "in_progress" {
-			icon = "⏳"
+		default:
+			if status == "in_progress" {
+				icon = "⏳"
+			}
 		}
 
 		d.Title = fmt.Sprintf("%s Workflow: %s", icon, wr.GetName())
@@ -222,10 +225,11 @@ func ParseEvent(event any, eventType string) EventDetail {
 	case *github.WorkflowJobEvent:
 		wj := e.GetWorkflowJob()
 		conclusion := wj.GetConclusion()
-		icon := "⚙️" // 统一使用 Workflow 的图标感
-		if conclusion == "success" {
+		icon := "⚙️"
+		switch conclusion {
+		case "success":
 			icon = "✅"
-		} else if conclusion == "failure" || conclusion == "cancelled" || conclusion == "timed_out" {
+		case "failure", "cancelled", "timed_out":
 			icon = "❌"
 		}
 
