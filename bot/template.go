@@ -261,43 +261,9 @@ func ParseEvent(event any, eventType string) EventDetail {
 		}
 		d.Text = strings.Join(pages, "\n")
 
-	case *github.CreateEvent:
-		repo := e.GetRepo().GetFullName()
-		ref := e.GetRef()
-		refType := e.GetRefType() // "branch" or "tag"
-		repoUrl := e.GetRepo().GetHTMLURL()
-
-		if refType == "tag" {
-			d.Skip = true // 跳过，因为 Push 事件也会触发 Tag 通知，避免重复
-		} else if strings.HasPrefix(ref, "v") { // 仅为了兼容性的容错，如果是分支但以 v 开头则不跳
-			d.IsTag = true
-			d.Title = fmt.Sprintf("🏷️ New Tag: %s/%s", repo, ref)
-			d.RefName = ref
-			d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, ref)
-			d.URL = d.RefURL
-		} else {
-			d.Title = fmt.Sprintf("🆕 New Branch: %s/%s", repo, ref)
-			d.RefName = ref
-			d.RefURL = fmt.Sprintf("%s/tree/%s", repoUrl, ref)
-		}
-		d.Text = ""
-
-	case *github.DeleteEvent:
-		repo := e.GetRepo().GetFullName()
-		ref := e.GetRef()
-		refType := e.GetRefType()
-
-		if refType == "tag" {
-			d.Skip = true // 跳过，避免与 Push 事件重复
-		} else if strings.HasPrefix(ref, "v") {
-			d.IsTag = true
-			d.Title = fmt.Sprintf("🗑️ Tag Deleted: %s/%s", repo, ref)
-			d.RefName = ref
-		} else {
-			d.Title = fmt.Sprintf("🗑️ Branch Deleted: %s/%s", repo, ref)
-			d.RefName = ref
-		}
-		d.Text = ""
+	case *github.CreateEvent, *github.DeleteEvent:
+		// 已经在 GitHub 后台关闭对应 Webhook，且 Push 事件已涵盖此类逻辑，此处统一跳过
+		d.Skip = true
 	}
 	return d
 }
