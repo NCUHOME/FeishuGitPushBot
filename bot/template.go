@@ -235,10 +235,16 @@ func ParseEvent(event any, eventType string) EventDetail {
 			}
 		}
 
-		d.Title = fmt.Sprintf("[%s] Run %s: %s - %s (%s)", repo, stateVerb, workflowName, ref, shortSHA)
+		d.Title = fmt.Sprintf("%s [%s] %s (%s)", icon, repo, workflowName, ref)
 
 		var lines []string
-		lines = append(lines, fmt.Sprintf("**%s** workflow run", workflowName))
+		repoUrl := e.GetRepo().GetHTMLURL()
+		commitPart := ""
+		if sha != "" && repoUrl != "" {
+			commitPart = fmt.Sprintf(" ([%s](%s/commit/%s))", shortSHA, repoUrl, sha)
+		}
+
+		lines = append(lines, fmt.Sprintf("**%s** workflow run on %s%s", workflowName, ref, commitPart))
 		lines = append(lines, "")
 		lines = append(lines, fmt.Sprintf("%s %s: %s", icon, workflowName, summary))
 
@@ -249,11 +255,6 @@ func ParseEvent(event any, eventType string) EventDetail {
 				duration := end.Sub(start)
 				lines = append(lines, fmt.Sprintf("%s in %s", strings.Title(stateVerb), FormatDuration(duration)))
 			}
-		}
-
-		repoUrl := e.GetRepo().GetHTMLURL()
-		if sha != "" && repoUrl != "" {
-			lines = append(lines, fmt.Sprintf("Commit: [%s](%s/commit/%s)", shortSHA, repoUrl, sha))
 		}
 
 		d.Text = strings.Join(lines, "\n")
