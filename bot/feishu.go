@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -41,7 +40,7 @@ func GetLarkClient() *lark.Client {
 
 
 
-// GetImageKey 转换外部 URL 为飞书 img_key (带缓存并支持异步更新)
+// GetImageKey 获取缓存中的飞书 img_key (极速返回，不阻塞)
 func GetImageKey(ctx context.Context, url string) string {
 	if url == "" {
 		return ""
@@ -52,24 +51,20 @@ func GetImageKey(ctx context.Context, url string) string {
 	}
 	var cache ImageCache
 	if DB != nil {
+		// 仅从数据库读取，不进行任何同步网络操作
 		if err := DB.NewSelect().Model(&cache).Where("url = ?", url).Scan(ctx); err == nil {
-			// 如果已有缓存，无论是多久前的都直接返回，保证消息响应极速
-			// 在后台异步刷新，看看头像有没有变
-			go refreshImageCache(url, cache)
 			return cache.ImgKey
 		}
 	}
 
-	// 第一次遇到此 URL，同步上传以获取 img_key
-	return syncUploadImage(ctx, url)
+	return ""
 }
 
 // syncUploadImage 同步执行下载、哈希计算并上传到飞书
 func syncUploadImage(ctx context.Context, url string) string {
-	// 下载图片
-	imageRes, err := http.R().Get(url)
+	// 下载图片，尊重 context 超时
+	imageRes, err := http.R().SetContext(ctx).Get(url)
 	if err != nil || imageRes.IsError() {
-		log.Printf("同步下载图片失败: %s, err: %v", url, err)
 		return ""
 	}
 	defer imageRes.Body.Close()
@@ -116,58 +111,7 @@ func syncUploadImage(ctx context.Context, url string) string {
 	return imgKey
 }
 
-// refreshImageCache 后台执行图片变更检查
-func refreshImageCache(url string, oldCache ImageCache) {
-	// 为了省流和防抖：如果 1 小时内检查过，就不再检查
-	if time.Since(oldCache.UpdatedAt) < 1*time.Hour {
-		return
-	}
-
-	// 下载图片并算哈希
-	imageRes, err := http.R().Get(url)
-	if err != nil || imageRes.IsError() {
-		return
-	}
-	defer imageRes.Body.Close()
-	imgData, _ := io.ReadAll(imageRes.Body)
-	newHash := fmt.Sprintf("%x", md5.Sum(imgData))
-
-	// 如果哈希没变，只刷新一下更新时间，免得下次继续检查
-	if newHash == oldCache.Hash {
-		if DB != nil {
-			_, _ = DB.NewUpdate().Model((*ImageCache)(nil)).
-				Set("updated_at = ?", time.Now()).
-				Where("url = ?", url).
-				Exec(context.Background())
-		}
-		return
-	}
-
-	// 哈希变了，说明头像换了，重新上传获取新 key
-	log.Printf("检测到头像内容变更，正在后台更新 img_key: %s", url)
-	client := GetLarkClient()
-	uploadCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	resp, err := client.Im.Image.Create(uploadCtx, larkim.NewCreateImageReqBuilder().
-		Body(larkim.NewCreateImageReqBodyBuilder().
-			ImageType(larkim.ImageTypeMessage).
-			Image(bytes.NewReader(imgData)).
-			Build()).
-		Build())
-
-	if err == nil && resp.Success() {
-		newKey := *resp.Data.ImageKey
-		if DB != nil {
-			_, _ = DB.NewUpdate().Model((*ImageCache)(nil)).
-				Set("img_key = ?", newKey).
-				Set("hash = ?", newHash).
-				Set("updated_at = ?", time.Now()).
-				Where("url = ?", url).
-				Exec(context.Background())
-			log.Printf("头像后台更新成功: %s -> %s", url, newKey)
-		}
-	}
-}
+// 移除旧的 refreshImageCache 函数，逻辑已迁移到 worker.go 的 imageRefreshWorker
 
 // SendToChat 发送消息到指定群组，返回消息ID
 func SendToChat(chatID string, card *Card) (string, error) {

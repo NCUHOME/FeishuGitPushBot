@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/google/go-github/v84/github"
@@ -28,10 +27,13 @@ func StartWorker() {
 func messageWorker() {
 	slog.Info("消息队列工作者已启动")
 	for {
-		// 每次取一条待处理的消息
+		// 每次取一条待处理的消息：
+		// 1. 状态为 pending
+		// 2. 状态为 failed 且重试次数 < 5，且距离上次更新已过去一定时间 (简单指数退避)
 		var event WebhookEvent
 		err := DB.NewSelect().Model(&event).
 			Where("status = ?", "pending").
+			WhereOr("status = ? AND retry_count < 5 AND updated_at < ?", "failed", time.Now().Add(-1*time.Minute)).
 			Order("id ASC").
 			Limit(1).
 			Scan(context.Background())
@@ -120,7 +122,9 @@ func processWebhookEvent(event WebhookEvent) error {
 			Order("id DESC").
 			Limit(1).Scan(ctx); err == nil {
 			
-			card := BuildCard(ctx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
+			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
+			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
+			buildCancel()
 			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
 				slog.Info("异步更新 Workflow 卡片成功", "github_id", githubID)
 				return nil
@@ -139,7 +143,9 @@ func processWebhookEvent(event WebhookEvent) error {
 			detail.Text = prevDetail.Text + "\n" + detail.Text
 			detail.Title = "🍏 分支推送 (合并已更新)"
 
-			card := BuildCard(ctx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
+			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
+			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
+			buildCancel()
 			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
 				detailJson, _ := json.Marshal(detail)
 				record.Content = string(detailJson)
@@ -189,6 +195,22 @@ func processWebhookEvent(event WebhookEvent) error {
 	}
 
 	// 6. 发送新消息
+	// 获取头像缓存状态，决定是否需要后续异步刷新
+	imageStatus := "done"
+	if avatarUrl != "" {
+		var cache ImageCache
+		if err := DB.NewSelect().Model(&cache).Where("url = ?", avatarUrl).Scan(ctx); err == nil {
+			// 如果缓存超过 24 小时，标记为待刷新，但在发送时先沿用旧缓存
+			if time.Since(cache.UpdatedAt) > 24*time.Hour {
+				imageStatus = "pending"
+			}
+		} else {
+			// 完全没缓存，标记为待拉取
+			imageStatus = "pending"
+		}
+	}
+
+	// 此时 BuildCard 调用 GetImageKey 是纯内存/DB查询，不会阻塞
 	card := BuildCard(ctx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
 	
 	var msgID string
@@ -205,11 +227,6 @@ func processWebhookEvent(event WebhookEvent) error {
 
 	// 7. 保存记录
 	if githubID != "" && msgID != "" {
-		imageStatus := "done"
-		if avatarUrl != "" && !strings.Contains(card.String(), "img_key") {
-			imageStatus = "pending"
-		}
-
 		detailJson, _ := json.Marshal(detail)
 		_, _ = DB.NewInsert().Model(&MessageRecord{
 			GithubID:        githubID,
@@ -219,7 +236,6 @@ func processWebhookEvent(event WebhookEvent) error {
 			Ref:             ref,
 			EventType:       event.EventType,
 			Content:         string(detailJson),
-			RawPayload:      string(payload),
 			ImageStatus:     imageStatus,
 			AvatarURL:       avatarUrl,
 			EventID:         event.ID,
@@ -257,22 +273,45 @@ func refreshOneImage(record MessageRecord) {
 		return
 	}
 
+	// 1. 同步尝试上传图片。syncUploadImage 内部会自动写入 ImageCache
 	imgKey := syncUploadImage(context.Background(), record.AvatarURL)
 	if imgKey == "" {
+		// slog.Debug("图片刷新：上传仍未成功", "url", record.AvatarURL)
 		return
 	}
 
+	// 2. 获取原始 Webhook 事件，用于重建卡片所需的元数据 (repoUrl, sender 等)
+	var event WebhookEvent
+	err := DB.NewSelect().Model(&event).Where("id = ?", record.EventID).Scan(context.Background())
+	if err != nil {
+		slog.Error("图片刷新：查找原始事件失败", "event_id", record.EventID, "error", err)
+		return
+	}
+
+	var m map[string]any
+	_ = json.Unmarshal([]byte(event.Payload), &m)
+	repoUrl := ext(m, "repository", "html_url")
+	sender := ext(m, "sender", "login")
+	senderUrl := ext(m, "sender", "html_url")
+
+	// 3. 解析保存的卡片详情
 	var detail EventDetail
 	_ = json.Unmarshal([]byte(record.Content), &detail)
 
-	card := BuildCard(context.Background(), record.RepoName, "", "", "", record.AvatarURL, detail)
-	
-	err := UpdateMessage(record.FeishuMessageID, card)
+	// 4. 重建卡片。此时 BuildCard 内部的 GetImageKey 会击中刚刚生成的缓存
+	// 设定一个 5s 超时以保证稳健
+	buildCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	card := BuildCard(buildCtx, record.RepoName, repoUrl, sender, senderUrl, record.AvatarURL, detail)
+
+	// 5. 调用飞书 API 更新原有消息卡片，带上头像
+	err = UpdateMessage(record.FeishuMessageID, card)
 	if err != nil {
-		slog.Error("图片刷新后更新消息失败", "message_id", record.FeishuMessageID, "error", err)
+		slog.Error("图片刷新：更新消息卡片失败", "message_id", record.FeishuMessageID, "error", err)
 		return
 	}
 
+	// 6. 成功，更新记录状态
 	_, _ = DB.NewUpdate().Model(&record).Set("image_status = ?", "done").WherePK().Exec(context.Background())
-	slog.Info("图片异步刷新成功", "message_id", record.FeishuMessageID)
+	slog.Info("图片刷新成功，消息卡片已同步更新", "message_id", record.FeishuMessageID)
 }

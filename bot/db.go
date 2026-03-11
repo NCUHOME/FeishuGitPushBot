@@ -25,7 +25,6 @@ type MessageRecord struct {
 	Ref             string    `bun:""`
 	EventType       string    `bun:",notnull"`
 	Content         string    `bun:"type:text"` // 存储卡片详情的 JSON
-	RawPayload      string    `bun:"type:text"` // 原始 Webhook 负载
 	CreatedAt       time.Time `bun:",nullzero,notnull,default:current_timestamp"`
 	UpdatedAt       time.Time `bun:",nullzero,notnull,default:current_timestamp"`
 	DeletedAt       time.Time `bun:",soft_delete,nullzero"`
