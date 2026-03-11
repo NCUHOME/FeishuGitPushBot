@@ -15,6 +15,7 @@ func main() {
 	// 加载配置
 	bot.LoadConfig()
 	bot.InitDB()
+	bot.StartWorker()
 	slog.Info("系统启动中...")
 
 	// 启动路由
