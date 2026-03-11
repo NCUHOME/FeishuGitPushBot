@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/go-github/v84/github"
 	"github.com/kyokomi/emoji/v2"
@@ -200,43 +201,120 @@ func ParseEvent(event any, eventType string) EventDetail {
 		wr := e.GetWorkflowRun()
 		status := wr.GetStatus()
 		conclusion := wr.GetConclusion()
+		repo := e.GetRepo().GetFullName()
+		workflowName := wr.GetName()
+		ref := wr.GetHeadBranch()
+		sha := wr.GetHeadSHA()
+		shortSHA := sha
+		if len(sha) > 7 {
+			shortSHA = sha[:7]
+		}
 
 		icon := "⚙️"
+		stateVerb := "started"
+		summary := "Workflow run started"
 		switch conclusion {
 		case "success":
 			icon = "✅"
+			stateVerb = "succeeded"
+			summary = "All jobs were successful"
 		case "failure", "cancelled", "timed_out":
 			icon = "❌"
+			if conclusion == "failure" {
+				stateVerb = "failed"
+				summary = "Some jobs failed"
+			} else {
+				stateVerb = conclusion
+				summary = fmt.Sprintf("Workflow was %s", conclusion)
+			}
 		default:
 			if status == "in_progress" {
 				icon = "⏳"
+				stateVerb = "running"
+				summary = "Workflow is currently running"
 			}
 		}
 
-		d.Title = fmt.Sprintf("%s Workflow: %s", icon, wr.GetName())
-		stateStr := status
+		d.Title = fmt.Sprintf("[%s] Run %s: %s - %s (%s)", repo, stateVerb, workflowName, ref, shortSHA)
+
+		var lines []string
+		lines = append(lines, fmt.Sprintf("**%s** workflow run", workflowName))
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("%s %s: %s", icon, workflowName, summary))
+
 		if conclusion != "" {
-			stateStr = conclusion
+			start := wr.GetRunStartedAt().Time
+			end := wr.GetUpdatedAt().Time
+			if !start.IsZero() && !end.IsZero() {
+				duration := end.Sub(start)
+				lines = append(lines, fmt.Sprintf("%s in %s", strings.Title(stateVerb), FormatDuration(duration)))
+			}
 		}
-		d.Text = fmt.Sprintf("Status: **%s**", stateStr)
-		d.RefName = wr.GetHeadBranch()
+
+		repoUrl := e.GetRepo().GetHTMLURL()
+		if sha != "" && repoUrl != "" {
+			lines = append(lines, fmt.Sprintf("Commit: [%s](%s/commit/%s)", shortSHA, repoUrl, sha))
+		}
+
+		d.Text = strings.Join(lines, "\n")
+		d.RefName = ref
 		d.URL = wr.GetHTMLURL()
 
 	case *github.WorkflowJobEvent:
 		wj := e.GetWorkflowJob()
+		status := wj.GetStatus()
 		conclusion := wj.GetConclusion()
+		repo := e.GetRepo().GetFullName()
+		jobName := wj.GetName()
+		shortSHA := wj.GetHeadSHA()
+		if len(shortSHA) > 7 {
+			shortSHA = shortSHA[:7]
+		}
+
 		icon := "⚙️"
+		stateVerb := "started"
 		switch conclusion {
 		case "success":
 			icon = "✅"
+			stateVerb = "succeeded"
 		case "failure", "cancelled", "timed_out":
 			icon = "❌"
+			stateVerb = conclusion
+		default:
+			if status == "in_progress" {
+				icon = "⏳"
+				stateVerb = "running"
+			}
 		}
 
-		// 如果有 WorkflowName 则使用，否则回退
-		name := wj.GetName()
-		d.Title = fmt.Sprintf("%s Workflow: %s", icon, name)
-		d.Text = fmt.Sprintf("Job: **%s** (%s)", name, wj.GetStatus())
+		d.Title = fmt.Sprintf("[%s] Job %s: %s (%s)", repo, stateVerb, jobName, shortSHA)
+
+		var lines []string
+		// 如果有 workflow_name 则显示为 Workflow / Job 格式
+		displayJobName := jobName
+		if wj.GetWorkflowName() != "" {
+			displayJobName = fmt.Sprintf("%s / %s", wj.GetWorkflowName(), jobName)
+		}
+		lines = append(lines, fmt.Sprintf("%s **%s**", icon, displayJobName))
+
+		durationInfo := ""
+		if conclusion != "" {
+			start := wj.GetStartedAt().Time
+			end := wj.GetCompletedAt().Time
+			if !start.IsZero() && !end.IsZero() {
+				duration := end.Sub(start)
+				durationInfo = FormatDuration(duration)
+				lines = append(lines, fmt.Sprintf("%s in %s", strings.Title(stateVerb), durationInfo))
+			}
+		}
+
+		repoUrl := e.GetRepo().GetHTMLURL()
+		sha := wj.GetHeadSHA()
+		if sha != "" && repoUrl != "" {
+			lines = append(lines, fmt.Sprintf("Commit: [%s](%s/commit/%s)", shortSHA, repoUrl, sha))
+		}
+
+		d.Text = strings.Join(lines, "\n")
 		d.URL = wj.GetHTMLURL()
 
 	case *github.WatchEvent:
@@ -455,4 +533,35 @@ func ProcessCommitMessage(msg string) string {
 		msg = "**" + prefix + "**" + msg[loc[1]:]
 	}
 	return msg
+}
+
+// FormatDuration 格式化耗时为人类可读格式 (Xh Ym Zs)
+func FormatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := d / time.Hour
+	d -= h * time.Hour
+	m := d / time.Minute
+	d -= m * time.Minute
+	s := d / time.Second
+
+	var parts []string
+	if h > 0 {
+		parts = append(parts, fmt.Sprintf("%d hour", h))
+		if h > 1 {
+			parts[len(parts)-1] += "s"
+		}
+	}
+	if m > 0 {
+		parts = append(parts, fmt.Sprintf("%d minute", m))
+		if m > 1 {
+			parts[len(parts)-1] += "s"
+		}
+	}
+	if s > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%d second", s))
+		if s > 1 {
+			parts[len(parts)-1] += "s"
+		}
+	}
+	return strings.Join(parts, " ")
 }
