@@ -39,7 +39,6 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 	switch e := event.(type) {
 	case *github.PushEvent:
-		repo := e.GetRepo().GetFullName()
 		ref := e.GetRef()
 		// 更鲁棒的标签检测：检查 refs/tags/ 前缀或 ref 本身
 		isTag := strings.HasPrefix(ref, "refs/tags/")
@@ -53,7 +52,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		repoUrl := e.GetRepo().GetHTMLURL()
 
 		if isTag {
-			d.Title = fmt.Sprintf("🏷️ New Tag: %s/%s", repo, refShort)
+			d.Title = fmt.Sprintf("🏷️ New Tag: %s", refShort)
 			d.RefName = refShort
 			d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, refShort)
 			d.URL = d.RefURL
@@ -122,16 +121,16 @@ func ParseEvent(event any, eventType string) EventDetail {
 			d.Text = strings.Join(lines, "\n")
 		} else if e.GetDeleted() {
 			if isTag {
-				d.Title = fmt.Sprintf("🗑️ Tag Deleted: %s/%s", repo, refShort)
+				d.Title = fmt.Sprintf("🗑️ Tag Deleted: %s", refShort)
 			} else {
-				d.Title = fmt.Sprintf("🗑️ Branch Deleted: %s/%s", repo, refShort)
+				d.Title = fmt.Sprintf("🗑️ Branch Deleted: %s", refShort)
 			}
 			d.Text = ""
 		} else if e.GetCreated() {
 			if isTag {
-				d.Title = fmt.Sprintf("🏷️ New Tag: %s/%s", repo, refShort)
+				d.Title = fmt.Sprintf("🏷️ New Tag: %s", refShort)
 			} else {
-				d.Title = fmt.Sprintf("🆕 New Branch: %s/%s", repo, refShort)
+				d.Title = fmt.Sprintf("🆕 New Branch: %s", refShort)
 			}
 			d.Text = ""
 		}
@@ -208,7 +207,6 @@ func ParseEvent(event any, eventType string) EventDetail {
 		wr := e.GetWorkflowRun()
 		status := wr.GetStatus()
 		conclusion := wr.GetConclusion()
-		repo := e.GetRepo().GetFullName()
 		workflowName := wr.GetName()
 		ref := wr.GetHeadBranch()
 		sha := wr.GetHeadSHA()
@@ -242,7 +240,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		if repoUrl != "" && ref != "" {
 			d.RefURL = fmt.Sprintf("%s/tree/%s", repoUrl, ref)
 		}
-		d.Title = fmt.Sprintf("%s Workflow: [%s] %s (%s)", icon, repo, workflowName, ref)
+		d.Title = fmt.Sprintf("%s Workflow %s: %s", icon, strings.Title(stateVerb), workflowName)
 
 		var lines []string
 		commitPart := ""
@@ -268,7 +266,6 @@ func ParseEvent(event any, eventType string) EventDetail {
 		wj := e.GetWorkflowJob()
 		status := wj.GetStatus()
 		conclusion := wj.GetConclusion()
-		repo := e.GetRepo().GetFullName()
 		jobName := wj.GetName()
 		shortSHA := wj.GetHeadSHA()
 		if len(shortSHA) > 7 {
@@ -292,7 +289,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 			}
 		}
 
-		d.Title = fmt.Sprintf("%s Workflow: [%s] Job %s (%s)", icon, repo, jobName, shortSHA)
+		d.Title = fmt.Sprintf("%s Job %s: %s", icon, strings.Title(stateVerb), jobName)
 
 		var lines []string
 		// 如果有 workflow_name 则显示为 Workflow / Job 格式
@@ -375,7 +372,7 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 		}
 		shaPart := ""
 		if detail.SHA != "" {
-			shaPart = fmt.Sprintf(" (%s)", detail.SHA)
+			shaPart = fmt.Sprintf(" ([%s](%s/commit/%s))", detail.SHA, repoUrl, detail.SHA)
 		}
 
 		if detail.IsTag {
