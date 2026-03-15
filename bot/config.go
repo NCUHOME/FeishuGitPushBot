@@ -54,19 +54,19 @@ func LoadConfig() {
 	}), nil)
 
 	if err != nil {
-		log.Fatalf("无法加载环境变量配置: %v", err)
+		log.Fatalf("failed to load environment variables: %v", err)
 	}
 
 	// 将配置解析到全局变量 C
 	if err := k.Unmarshal("", &C); err != nil {
-		log.Fatalf("解析配置失败: %v", err)
+		log.Fatalf("failed to unmarshal configuration: %v", err)
 	}
 
 	// 打印关键配置状态
 	if C.Feishu.Webhook == "" && (C.Feishu.AppID == "" || C.Feishu.AppSecret == "") {
-		log.Println("警告: Webhook 和 AppID/AppSecret 均未设置，消息发送可能受限")
+		log.Println("Warning: Both Webhook and AppID/AppSecret are not set, message sending might be limited")
 	}
 	if C.Database.URL == "" {
-		log.Println("警告: DATABASE_URL 未设置，将无法保存消息记录以便后续更新或回复")
+		log.Println("Warning: DATABASE_URL is not set, message records will not be saved for updates or replies")
 	}
 }

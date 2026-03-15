@@ -16,12 +16,12 @@ func main() {
 	bot.LoadConfig()
 	bot.InitDB()
 	bot.StartWorker()
-	slog.Info("系统启动中...")
+	slog.Info("System starting...")
 
 	// 启动路由
 	r := bot.InitRouter()
 	if err := r.Run(":8080"); err != nil {
-		slog.Error("服务运行失败", "error", err)
+		slog.Error("Service failed", "error", err)
 		os.Exit(1)
 	}
 }

@@ -119,7 +119,7 @@ func SendToChat(chatID string, card *Card) (string, error) {
 		chatID = C.Feishu.ChatID
 	}
 	if chatID == "" {
-		return "", fmt.Errorf("未指定目标聊天 ID (CHAT_ID)")
+		return "", fmt.Errorf("target chat ID (CHAT_ID) not specified")
 	}
 
 	return sendMessage(chatID, "", card)
@@ -152,7 +152,7 @@ func UpdateMessage(messageID string, card *Card) error {
 		return err
 	}
 	if !resp.Success() {
-		return fmt.Errorf("更新消息失败 %d: %s", resp.Code, resp.Msg)
+		return fmt.Errorf("failed to update message %d: %s", resp.Code, resp.Msg)
 	}
 	return nil
 }
@@ -188,7 +188,7 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 			return "", err
 		}
 		if !resp.Success() {
-			return "", fmt.Errorf("回复消息失败 %d: %s", resp.Code, resp.Msg)
+			return "", fmt.Errorf("failed to reply to message %d: %s", resp.Code, resp.Msg)
 		}
 		return *resp.Data.MessageId, nil
 	}
@@ -197,7 +197,7 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 		chatID = C.Feishu.ChatID
 	}
 	if chatID == "" {
-		return "", fmt.Errorf("未指定目标聊天 ID (CHAT_ID)")
+		return "", fmt.Errorf("target chat ID (CHAT_ID) not specified")
 	}
 
 	var resp *larkim.CreateMessageResp
@@ -224,7 +224,7 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 		return "", err
 	}
 	if !resp.Success() {
-		return "", fmt.Errorf("发送消息失败 %d: %s", resp.Code, resp.Msg)
+		return "", fmt.Errorf("failed to send message %d: %s", resp.Code, resp.Msg)
 	}
 	return *resp.Data.MessageId, nil
 }
@@ -264,7 +264,7 @@ func SendCard(card *Card) error {
 		return fmt.Errorf("HTTP %d: %s", res.StatusCode(), res.String())
 	}
 	if resp.Code != 0 {
-		return fmt.Errorf("飞书错误 %d: %s", resp.Code, resp.Msg)
+		return fmt.Errorf("Feishu error %d: %s", resp.Code, resp.Msg)
 	}
 	return nil
 }
@@ -337,7 +337,7 @@ func (c *Card) AddCollapsiblePanel(content string) {
 		"header": map[string]any{
 			"title": map[string]string{
 				"tag": "plain_text",
-				"content": "📝 展开查看完整正文",
+				"content": "📝 Expand to view full content",
 			},
 		},
 		"elements": []any{

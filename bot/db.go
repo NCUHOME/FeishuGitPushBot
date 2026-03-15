@@ -63,7 +63,7 @@ type ImageCache struct {
 // InitDB 初始化数据库连接并执行自动迁移
 func InitDB() {
 	if C.Database.URL == "" {
-		log.Println("跳过数据库初始化: DATABASE_URL 未设置")
+		log.Println("Skipping database initialization: DATABASE_URL not set")
 		return
 	}
 
@@ -74,22 +74,22 @@ func InitDB() {
 	ctx := context.Background()
 	_, err := db.NewCreateTable().Model((*MessageRecord)(nil)).IfNotExists().Exec(ctx)
 	if err != nil {
-		log.Printf("数据库迁移失败 (跳过数据库功能): %v", err)
+		log.Printf("Database migration failed (skipping database features): %v", err)
 		return
 	}
 
 	_, err = db.NewCreateTable().Model((*ImageCache)(nil)).IfNotExists().Exec(ctx)
 	if err != nil {
-		log.Printf("数据库图片缓存迁移失败 (跳过图片缓存): %v", err)
+		log.Printf("Image cache migration failed (skipping image cache): %v", err)
 		return
 	}
 
 	_, err = db.NewCreateTable().Model((*WebhookEvent)(nil)).IfNotExists().Exec(ctx)
 	if err != nil {
-		log.Printf("数据库原始事件表迁移失败: %v", err)
+		log.Printf("Webhook event table migration failed: %v", err)
 		return
 	}
 
 	DB = db
-	log.Println("数据库初始化成功")
+	log.Println("Database initialization successful")
 }

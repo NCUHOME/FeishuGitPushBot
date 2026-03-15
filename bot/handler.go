@@ -16,15 +16,15 @@ func GithubHandler(c *gin.Context) {
 	secret := strings.TrimSpace(C.Github.Key)
 	payload, err := github.ValidatePayload(c.Request, []byte(secret))
 	if err != nil {
-		slog.Error("签名验证失败", "error", err)
-		c.AbortWithStatusJSON(400, gin.H{"code": 1, "msg": "签名验证失败"})
+		slog.Error("Signature verification failed", "error", err)
+		c.AbortWithStatusJSON(400, gin.H{"code": 1, "msg": "signature verification failed"})
 		return
 	}
 
 	eventType := github.WebHookType(c.Request)
 	event, err := github.ParseWebHook(eventType, payload)
 	if err != nil {
-		slog.Error("解析 Webhook 失败", "error", err)
+		slog.Error("Failed to parse Webhook", "error", err)
 		c.AbortWithStatusJSON(400, gin.H{"code": 2, "msg": err.Error()})
 		return
 	}
@@ -43,7 +43,7 @@ func GithubHandler(c *gin.Context) {
 			Status:    "pending",
 		}).Exec(c.Request.Context())
 		if err != nil {
-			slog.Error("记录 Webhook 事件失败", "error", err)
+			slog.Error("Failed to record Webhook event", "error", err)
 			c.AbortWithStatusJSON(500, gin.H{"code": 3, "msg": "failed to record event"})
 			return
 		}

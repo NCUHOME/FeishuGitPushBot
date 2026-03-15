@@ -13,7 +13,7 @@ import (
 // StartWorker 启动消息队列处理工作者和图片刷新任务
 func StartWorker() {
 	if DB == nil {
-		slog.Warn("数据库未初始化，消息队列工作者将不启动")
+		slog.Warn("Database not initialized, message worker will not start")
 		return
 	}
 
@@ -25,7 +25,7 @@ func StartWorker() {
 }
 
 func messageWorker() {
-	slog.Info("消息队列工作者已启动")
+	slog.Info("Message worker started")
 	for {
 		// 每次取一条待处理的消息：
 		// 1. 状态为 pending
@@ -49,7 +49,7 @@ func messageWorker() {
 
 		err = processWebhookEvent(event)
 		if err != nil {
-			slog.Error("处理 Webhook 事件失败", "id", event.ID, "error", err)
+			slog.Error("Failed to process Webhook event", "id", event.ID, "error", err)
 			_, _ = DB.NewUpdate().Model(&event).
 				Set("status = ?", "failed").
 				Set("retry_count = retry_count + 1").
@@ -75,7 +75,7 @@ func processWebhookEvent(event WebhookEvent) error {
 	payload := []byte(event.Payload)
 	githubEvent, err := github.ParseWebHook(event.EventType, payload)
 	if err != nil {
-		return fmt.Errorf("解析 Webhook 失败: %w", err)
+		return fmt.Errorf("failed to parse Webhook: %w", err)
 	}
 
 	detail := ParseEvent(githubEvent, event.EventType)
@@ -126,7 +126,7 @@ func processWebhookEvent(event WebhookEvent) error {
 			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
 			buildCancel()
 			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
-				slog.Info("异步更新 Workflow 卡片成功", "github_id", githubID)
+				slog.Info("Workflow card asynchronously updated", "github_id", githubID)
 				return nil
 			}
 		}
@@ -141,7 +141,7 @@ func processWebhookEvent(event WebhookEvent) error {
 			var prevDetail EventDetail
 			_ = json.Unmarshal([]byte(record.Content), &prevDetail)
 			detail.Text = prevDetail.Text + "\n" + detail.Text
-			detail.Title = "🍏 分支推送 (合并已更新)"
+			detail.Title = "🍏 Branch Push (Merged)"
 
 			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
 			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
@@ -150,7 +150,7 @@ func processWebhookEvent(event WebhookEvent) error {
 				detailJson, _ := json.Marshal(detail)
 				record.Content = string(detailJson)
 				_, _ = DB.NewUpdate().Model(&record).Column("content").WherePK().Exec(ctx)
-				slog.Info("异步合并 Push 成功", "github_id", githubID)
+				slog.Info("Push merged asynchronously", "github_id", githubID)
 				return nil
 			}
 		}
@@ -246,7 +246,7 @@ func processWebhookEvent(event WebhookEvent) error {
 }
 
 func imageRefreshWorker() {
-	slog.Info("图片刷新工作者已启动")
+	slog.Info("Image refresh worker started")
 	for {
 		var records []MessageRecord
 		err := DB.NewSelect().Model(&records).
@@ -284,7 +284,7 @@ func refreshOneImage(record MessageRecord) {
 	var event WebhookEvent
 	err := DB.NewSelect().Model(&event).Where("id = ?", record.EventID).Scan(context.Background())
 	if err != nil {
-		slog.Error("图片刷新：查找原始事件失败", "event_id", record.EventID, "error", err)
+		slog.Error("Image refresh: failed to find original event", "event_id", record.EventID, "error", err)
 		return
 	}
 
@@ -307,11 +307,11 @@ func refreshOneImage(record MessageRecord) {
 	// 5. 调用飞书 API 更新原有消息卡片，带上头像
 	err = UpdateMessage(record.FeishuMessageID, card)
 	if err != nil {
-		slog.Error("图片刷新：更新消息卡片失败", "message_id", record.FeishuMessageID, "error", err)
+		slog.Error("Image refresh: failed to update message card", "message_id", record.FeishuMessageID, "error", err)
 		return
 	}
 
 	// 6. 成功，更新记录状态
 	_, _ = DB.NewUpdate().Model(&record).Set("image_status = ?", "done").WherePK().Exec(context.Background())
-	slog.Info("图片刷新成功，消息卡片已同步更新", "message_id", record.FeishuMessageID)
+	slog.Info("Image refresh successful, message card updated", "message_id", record.FeishuMessageID)
 }

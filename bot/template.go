@@ -21,13 +21,14 @@ type EventDetail struct {
 	ReplyToTitle string `json:"reply_to_title"`
 	FoldableBody string `json:"foldable_body"`
 	Skip         bool   `json:"skip"`
+	SHA          string `json:"sha"`
 	IsTag        bool   `json:"is_tag"`
 }
 
 // ParseEvent 解析 GitHub 事件为极简明了的 Detail
 func ParseEvent(event any, eventType string) EventDetail {
 	d := EventDetail{
-		Title: fmt.Sprintf("🔔 GitHub 事件: %s", eventType),
+		Title: fmt.Sprintf("🔔 GitHub Event: %s", eventType),
 		Skip:  false, // 默认不跳过任何事件
 	}
 
@@ -136,6 +137,12 @@ func ParseEvent(event any, eventType string) EventDetail {
 		}
 		if hc := e.GetHeadCommit(); hc != nil {
 			d.URL = hc.GetURL()
+			sha := hc.GetID()
+			if len(sha) > 7 {
+				d.SHA = sha[:7]
+			} else {
+				d.SHA = sha
+			}
 		}
 
 	case *github.PullRequestEvent:
@@ -191,7 +198,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		d.Title = fmt.Sprintf("🌻 Comment %s", e.GetAction())
 		commentBody := SafeText(strings.TrimSpace(e.GetComment().GetBody()), 1500)
 		if commentBody != "" {
-			d.Text = fmt.Sprintf("**%s**\n\n**内容**\n%s", iss.GetTitle(), commentBody)
+			d.Text = fmt.Sprintf("**%s**\n\n**Content**\n%s", iss.GetTitle(), commentBody)
 		} else {
 			d.Text = fmt.Sprintf("**%s**", iss.GetTitle())
 		}
@@ -212,50 +219,46 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 		icon := "⚙️"
 		stateVerb := "started"
-		summary := "Workflow run started"
 		switch conclusion {
 		case "success":
 			icon = "✅"
 			stateVerb = "succeeded"
-			summary = "All jobs were successful"
 		case "failure", "cancelled", "timed_out":
 			icon = "❌"
 			if conclusion == "failure" {
 				stateVerb = "failed"
-				summary = "Some jobs failed"
 			} else {
 				stateVerb = conclusion
-				summary = fmt.Sprintf("Workflow was %s", conclusion)
 			}
 		default:
 			if status == "in_progress" {
 				icon = "⏳"
 				stateVerb = "running"
-				summary = "Workflow is currently running"
 			}
 		}
 
-		d.Title = fmt.Sprintf("%s [%s] %s (%s)", icon, repo, workflowName, ref)
+		d.SHA = shortSHA
+		repoUrl := e.GetRepo().GetHTMLURL()
+		if repoUrl != "" && ref != "" {
+			d.RefURL = fmt.Sprintf("%s/tree/%s", repoUrl, ref)
+		}
+		d.Title = fmt.Sprintf("%s Workflow: [%s] %s (%s)", icon, repo, workflowName, ref)
 
 		var lines []string
-		repoUrl := e.GetRepo().GetHTMLURL()
 		commitPart := ""
 		if sha != "" && repoUrl != "" {
 			commitPart = fmt.Sprintf(" ([%s](%s/commit/%s))", shortSHA, repoUrl, sha)
 		}
 
-		lines = append(lines, fmt.Sprintf("**%s** workflow run on %s%s", workflowName, ref, commitPart))
-		lines = append(lines, "")
-		lines = append(lines, fmt.Sprintf("%s %s: %s", icon, workflowName, summary))
-
+		durationPart := ""
 		if conclusion != "" {
 			start := wr.GetRunStartedAt().Time
 			end := wr.GetUpdatedAt().Time
 			if !start.IsZero() && !end.IsZero() {
-				duration := end.Sub(start)
-				lines = append(lines, fmt.Sprintf("%s in %s", strings.Title(stateVerb), FormatDuration(duration)))
+				durationPart = fmt.Sprintf(" in %s", FormatDuration(end.Sub(start)))
 			}
 		}
+		lines = append(lines, fmt.Sprintf("%s **%s** workflow run %s%s%s", icon, workflowName, stateVerb, durationPart, commitPart))
 
 		d.Text = strings.Join(lines, "\n")
 		d.RefName = ref
@@ -271,6 +274,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		if len(shortSHA) > 7 {
 			shortSHA = shortSHA[:7]
 		}
+		d.SHA = shortSHA
 
 		icon := "⚙️"
 		stateVerb := "started"
@@ -288,7 +292,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 			}
 		}
 
-		d.Title = fmt.Sprintf("[%s] Job %s: %s (%s)", repo, stateVerb, jobName, shortSHA)
+		d.Title = fmt.Sprintf("%s Workflow: [%s] Job %s (%s)", icon, repo, jobName, shortSHA)
 
 		var lines []string
 		// 如果有 workflow_name 则显示为 Workflow / Job 格式
@@ -296,18 +300,16 @@ func ParseEvent(event any, eventType string) EventDetail {
 		if wj.GetWorkflowName() != "" {
 			displayJobName = fmt.Sprintf("%s / %s", wj.GetWorkflowName(), jobName)
 		}
-		lines = append(lines, fmt.Sprintf("%s **%s**", icon, displayJobName))
 
-		durationInfo := ""
+		durationPart := ""
 		if conclusion != "" {
 			start := wj.GetStartedAt().Time
 			end := wj.GetCompletedAt().Time
 			if !start.IsZero() && !end.IsZero() {
-				duration := end.Sub(start)
-				durationInfo = FormatDuration(duration)
-				lines = append(lines, fmt.Sprintf("%s in %s", strings.Title(stateVerb), durationInfo))
+				durationPart = fmt.Sprintf(" in %s", FormatDuration(end.Sub(start)))
 			}
 		}
+		lines = append(lines, fmt.Sprintf("%s job **%s** %s%s", icon, displayJobName, stateVerb, durationPart))
 
 		repoUrl := e.GetRepo().GetHTMLURL()
 		sha := wj.GetHeadSHA()
@@ -320,7 +322,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 	case *github.WatchEvent:
 		d.Title = "⭐ New Star!"
-		d.Text = "您的仓库有了新的关注者。"
+		d.Text = "Your repository has a new follower."
 
 	case *github.StarEvent:
 		action := e.GetAction()
@@ -334,7 +336,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 	case *github.ForkEvent:
 		forkee := e.GetForkee()
 		d.Title = "🍴 Repository Forked"
-		d.Text = fmt.Sprintf("仓库被复刻到 [%s](%s)", forkee.GetFullName(), forkee.GetHTMLURL())
+		d.Text = fmt.Sprintf("Repository forked to [%s](%s)", forkee.GetFullName(), forkee.GetHTMLURL())
 
 	case *github.GollumEvent:
 		d.Title = "📖 Wiki Updated"
@@ -371,10 +373,15 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 		if link == "" {
 			link = repoUrl
 		}
+		shaPart := ""
+		if detail.SHA != "" {
+			shaPart = fmt.Sprintf(" (%s)", detail.SHA)
+		}
+
 		if detail.IsTag {
-			refPart = fmt.Sprintf(" / 🏷️ **Tag** [%s](%s)", detail.RefName, link)
+			refPart = fmt.Sprintf(" / 🏷️ **Tag** [%s](%s)%s", detail.RefName, link, shaPart)
 		} else {
-			refPart = fmt.Sprintf(" / 🌿 **Branch** [%s](%s)", detail.RefName, link)
+			refPart = fmt.Sprintf(" / 🌿 **Branch** [%s](%s)%s", detail.RefName, link, shaPart)
 		}
 	}
 	repoAndBranchText := repoPart + refPart + " / "
@@ -450,7 +457,7 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 	// --- 3. 动态操作按钮 ---
 	// 只有非 Push 事件才显示详情按钮 (Commit 不显示)
 	if detail.URL != "" && !strings.Contains(detail.Title, "commits") && !strings.Contains(detail.Title, "Created:") && !strings.Contains(detail.Title, "Deleted:") {
-		btnText := "查看"
+		btnText := "View"
 		btnType := "primary"
 
 		if strings.Contains(detail.Title, "Workflow") {
@@ -470,7 +477,7 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 		if btnType == "danger" && detail.RefURL != "" {
 			card.AddAction(Button{
 				Tag:  "button",
-				Text: Text{Tag: "plain_text", Content: "查看分支"},
+				Text: Text{Tag: "plain_text", Content: "View Branch"},
 				Url:  detail.RefURL,
 				Type: "default",
 			})
@@ -488,7 +495,7 @@ func GetTemplate(title string) string {
 	if ContainsAny(title, "✅", "💜", "🟢") {
 		return "green"
 	}
-	if ContainsAny(title, "⚠️", "🏃", "🟡") {
+	if ContainsAny(title, "⚠️", "🏃", "🟡", "⏳") {
 		return "orange"
 	}
 	return "blue"
@@ -521,19 +528,51 @@ func SafeText(s string, maxRunes int) string {
 	return s
 }
 
-var conventionalRegex = regexp.MustCompile(`^(?i)(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert|ref)(\([a-z0-9_-]+\))?(!?):`)
+var conventionalRegex = regexp.MustCompile(`(?i)(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert|ref)(\([^)]+\))?(!?):`)
 
 // ProcessCommitMessage 处理提交信息，转换 emoji 并高亮 Conventional Commit 前缀
 func ProcessCommitMessage(msg string) string {
 	msg = strings.TrimSpace(msg)
 	// 1. 转换 Emoji 短代码
 	msg = emoji.Sprint(msg)
-	// 2. 高亮 Conventional Commit
-	if loc := conventionalRegex.FindStringIndex(msg); loc != nil {
-		prefix := msg[loc[0]:loc[1]]
-		msg = "**" + prefix + "**" + msg[loc[1]:]
+
+	// 2. 高亮 Conventional Commit 并处理换行
+	matches := conventionalRegex.FindAllStringIndex(msg, -1)
+	if len(matches) == 0 {
+		return msg
 	}
-	return msg
+
+	var result strings.Builder
+	last := 0
+	for i, match := range matches {
+		start, end := match[0], match[1]
+
+		// 处理当前匹配之前的内容
+		if start > last {
+			part := msg[last:start]
+			// 如果这个匹配不是在行首（即前面有非换行内容），且前面有内容，则注入换行实现“正确换行”
+			if i > 0 && !strings.HasSuffix(result.String(), "\n") && strings.TrimSpace(part) != "" {
+				result.WriteString(strings.TrimRight(part, " "))
+				result.WriteString("\n")
+			} else {
+				result.WriteString(part)
+			}
+		} else if i > 0 {
+			// 如果紧挨着上一个匹配，直接加换行
+			if !strings.HasSuffix(result.String(), "\n") {
+				result.WriteString("\n")
+			}
+		}
+
+		// 加粗匹配的前缀
+		result.WriteString("**")
+		result.WriteString(msg[start:end])
+		result.WriteString("**")
+		last = end
+	}
+	result.WriteString(msg[last:])
+
+	return result.String()
 }
 
 // FormatDuration 格式化耗时为人类可读格式 (Xh Ym Zs)
