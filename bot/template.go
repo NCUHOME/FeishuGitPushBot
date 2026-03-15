@@ -335,6 +335,28 @@ func ParseEvent(event any, eventType string) EventDetail {
 	case *github.CreateEvent, *github.DeleteEvent:
 		// 已经在 GitHub 后台关闭对应 Webhook，且 Push 事件已涵盖此类逻辑，此处统一跳过
 		d.Skip = true
+
+	case *github.PublicEvent:
+		d.Title = "🔓 Repository Made Public"
+		d.Text = "This repository is now visible to everyone."
+
+	case *github.RepositoryEvent:
+		action := e.GetAction()
+		switch action {
+		case "publicized":
+			// GitHub 同时会发送 public 事件，这里直接跳过以防重复
+			d.Skip = true
+		case "privatized":
+			d.Title = "🔒 Repository Made Private"
+		case "deleted":
+			d.Title = "🗑️ Repository Deleted"
+		case "renamed":
+			d.Title = "📝 Repository Renamed"
+			d.Text = fmt.Sprintf("Renamed to **%s**", e.GetRepo().GetFullName())
+		default:
+			// 其他 edited 事件（如修改描述、Logo 等）通常比较琐碎，默认跳过
+			d.Skip = true
+		}
 	}
 	return d
 }
