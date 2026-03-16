@@ -158,7 +158,15 @@ func processWebhookEvent(event WebhookEvent) error {
 
 	// 5. 查找父级 ID (回复逻辑)
 	var parentID string
-	if event.EventType == "issue_comment" || event.EventType == "pull_request_review_comment" || event.EventType == "pull_request_review" || (event.EventType == "pull_request" && ext(m, "action") == "edited") {
+	// 改为：只要是 Issue/PR 相关的非“创建”事件，都尝试寻找父消息进行话题回复
+	isIssueOrPR := event.EventType == "issue_comment" || 
+		event.EventType == "pull_request_review_comment" || 
+		event.EventType == "pull_request_review" || 
+		event.EventType == "pull_request" || 
+		event.EventType == "issues"
+
+	action := ext(m, "action")
+	if isIssueOrPR && action != "opened" {
 		commitId := ext(m, "comment", "commit_id")
 		if commitId == "" {
 			commitId = ext(m, "pull_request", "head", "sha")
