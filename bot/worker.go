@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/go-github/v84/github"
+	"strings"
 )
 
 // StartWorker 启动消息队列处理工作者和图片刷新任务
@@ -104,13 +105,18 @@ func processWebhookEvent(event WebhookEvent) error {
 		githubID = fmt.Sprintf("push:%s:%s", repo, ref)
 	case "pull_request":
 		githubID = fmt.Sprintf("pr:%s:%s", repo, ext(m, "pull_request", "number"))
+	case "issues":
+		githubID = fmt.Sprintf("issue:%s:%s", repo, ext(m, "issue", "number"))
 	default:
 		githubID = ext(m, "head_commit", "id")
 		if githubID == "" {
 			githubID = ext(m, "pull_request", "head", "sha")
 		}
 		if githubID == "" {
-			githubID = ext(m, "issue", "number")
+			issueNum := ext(m, "issue", "number")
+			if issueNum != "" {
+				githubID = fmt.Sprintf("issue:%s:%s", repo, issueNum)
+			}
 		}
 	}
 
@@ -176,12 +182,9 @@ func processWebhookEvent(event WebhookEvent) error {
 		}
 		if commitId != "" {
 			var record MessageRecord
-			if err := DB.NewSelect().Model(&record).Where("github_id LIKE ?", "%"+commitId+"%").Limit(1).Scan(ctx); err == nil {
+			// 始终按 ID 升序取第一条 (Root message)
+			if err := DB.NewSelect().Model(&record).Where("github_id LIKE ?", "%"+commitId+"%").Order("id ASC").Limit(1).Scan(ctx); err == nil {
 				parentID = record.FeishuMessageID
-				var parentDetail EventDetail
-				if err := json.Unmarshal([]byte(record.Content), &parentDetail); err == nil {
-					detail.ReplyToTitle = parentDetail.Title
-				}
 			}
 		}
 		if parentID == "" {
@@ -191,12 +194,17 @@ func processWebhookEvent(event WebhookEvent) error {
 			}
 			if issueNum != "" {
 				var record MessageRecord
-				if err := DB.NewSelect().Model(&record).Where("github_id = ? OR github_id LIKE ?", issueNum, "%:"+issueNum).Limit(1).Scan(ctx); err == nil {
+				searchID := fmt.Sprintf("%%:%s", issueNum)
+				if strings.Contains(githubID, "pr:") || strings.Contains(githubID, "issue:") {
+					// 如果我们已经有了带 repo 的 ID 前缀，直接搜索完整匹配或相似匹配
+					searchID = fmt.Sprintf("%%:%s:%s", repo, issueNum)
+				}
+				
+				if err := DB.NewSelect().Model(&record).
+					Where("github_id = ? OR github_id LIKE ?", fmt.Sprintf("pr:%s:%s", repo, issueNum), searchID).
+					WhereOr("github_id = ?", fmt.Sprintf("issue:%s:%s", repo, issueNum)).
+					Order("id ASC").Limit(1).Scan(ctx); err == nil {
 					parentID = record.FeishuMessageID
-					var parentDetail EventDetail
-					if err := json.Unmarshal([]byte(record.Content), &parentDetail); err == nil {
-						detail.ReplyToTitle = parentDetail.Title
-					}
 				}
 			}
 		}
