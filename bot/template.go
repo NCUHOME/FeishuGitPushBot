@@ -258,7 +258,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 			d.Text = fmt.Sprintf("**%s**\n*(Comment too long, see reply)*", iss.GetTitle())
 			d.ExtraReply = commentBody
 		} else if commentBody != "" {
-			d.Text = fmt.Sprintf("**%s**\n\n**Content**\n%s", iss.GetTitle(), commentBody)
+			d.Text = fmt.Sprintf("**%s**\n%s", iss.GetTitle(), commentBody)
 		} else {
 			d.Text = fmt.Sprintf("**%s**", iss.GetTitle())
 		}
@@ -277,7 +277,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 		commentBody := SafeText(strings.TrimSpace(body), 1500)
 		if commentBody != "" {
-			d.Text = fmt.Sprintf("**%s**\n\n**Content**\n%s", pr.GetTitle(), commentBody)
+			d.Text = fmt.Sprintf("**%s**\n%s", pr.GetTitle(), commentBody)
 		} else {
 			d.Text = fmt.Sprintf("**%s**", pr.GetTitle())
 		}
@@ -293,7 +293,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		// PullRequestReviewEvent 在 go-github 中目前没有 Changes 字段
 		reviewBody := SafeText(strings.TrimSpace(body), 1500)
 		if reviewBody != "" {
-			d.Text = fmt.Sprintf("**%s**\n\n**Review**\n%s", pr.GetTitle(), reviewBody)
+			d.Text = fmt.Sprintf("**%s**\n%s", pr.GetTitle(), reviewBody)
 		} else {
 			d.Text = fmt.Sprintf("**%s**", pr.GetTitle())
 		}
@@ -761,9 +761,8 @@ func ProcessGithubMarkdown(s string) (text string, foldable string) {
 	// 1. 预处理 Mermaid
 	s = strings.ReplaceAll(s, "```mermaid", "```")
 
-	// 2. 提取 <details> <summary> 内容作为 FoldableBody
-	// 目前飞书 Markdown 不支持 details/summary，我们将其提取到 FoldableBody 中
-	reDetails := regexp.MustCompile(`(?s)<details>\s*<summary>(.*?)</summary>(.*?)</details>`)
+	// 2. 更加鲁棒地提取 <details> <summary> 内容 (支持属性如 <details open>)
+	reDetails := regexp.MustCompile(`(?is)<details.*?>\s*<summary.*?>(.*?)</summary>(.*?)</details>`)
 	var foldables []string
 	
 	// 提取并替换
@@ -772,17 +771,24 @@ func ProcessGithubMarkdown(s string) (text string, foldable string) {
 		if len(match) > 2 {
 			title := strings.TrimSpace(match[1])
 			// 移除 HTML 标签，只保留纯文本作为标题
-			title = regexp.MustCompile(`<.*?>`).ReplaceAllString(title, "")
+			title = regexp.MustCompile(`(?s)<.*?>`).ReplaceAllString(title, "")
+			
 			content := strings.TrimSpace(match[2])
-			foldables = append(foldables, fmt.Sprintf("**%s**\n%s", title, content))
+			// 移除内容中的所有 HTML 标签 (如 table, tr, td, br 等)
+			content = regexp.MustCompile(`(?s)<.*?>`).ReplaceAllString(content, "")
+			// 压缩多余换行
+			content = regexp.MustCompile(`\n{3,}`).ReplaceAllString(content, "\n\n")
+			
+			foldables = append(foldables, fmt.Sprintf("**%s**\n%s", title, strings.TrimSpace(content)))
 		}
-		return "" // 将其从主文档中移除，放入折叠面板
+		return "" // 从主文档移除
 	})
 
-	// 3. 简单的 Markdown 转换 (如处理一些 GitHub 特有的格式)
+	// 3. 移除主体中可能残留的所有 HTML 标签
+	processed = regexp.MustCompile(`(?s)<.*?>`).ReplaceAllString(processed, "")
 	processed = strings.TrimSpace(processed)
 	
-	// 4. 安全阶段 (截断长度，转义 < >)
+	// 4. 安全阶段 (截断长度及最终清洗)
 	text = SafeText(processed, 2000)
 	foldable = SafeText(strings.Join(foldables, "\n\n"), 3000)
 
