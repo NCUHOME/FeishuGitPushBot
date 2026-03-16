@@ -158,7 +158,7 @@ func processWebhookEvent(event WebhookEvent) error {
 
 	// 5. 查找父级 ID (回复逻辑)
 	var parentID string
-	if event.EventType == "issue_comment" || event.EventType == "pull_request_review_comment" || event.EventType == "pull_request_review" {
+	if event.EventType == "issue_comment" || event.EventType == "pull_request_review_comment" || event.EventType == "pull_request_review" || (event.EventType == "pull_request" && ext(m, "action") == "edited") {
 		commitId := ext(m, "comment", "commit_id")
 		if commitId == "" {
 			commitId = ext(m, "pull_request", "head", "sha")
@@ -223,6 +223,13 @@ func processWebhookEvent(event WebhookEvent) error {
 
 	if sendErr != nil {
 		return sendErr
+	}
+
+	// 6.5 发送长文本回复 (如果存在)
+	if detail.ExtraReply != "" && msgID != "" {
+		replyCard := NewCard()
+		replyCard.AddMarkdown(detail.ExtraReply)
+		_, _ = ReplyToMessage(msgID, replyCard)
 	}
 
 	// 7. 保存记录
