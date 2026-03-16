@@ -25,13 +25,13 @@
 | `FEISHU_WEBHOOK` | 飞书自定义机器人 Webhook 地址 | `https://open.feishu.cn/open-apis/bot/v2/hook/...` |
 | `FEISHU_SECRET` | 飞书机器人安全校验密钥 | `your_feishu_secret` |
 | `GITHUB_KEY` | GitHub Webhook Secret | `your_github_secret` |
+| `GITHUB_IGNORE_USERS` | (可选) 忽略推送的用户列表，逗号分隔 | `bot-user,silent-dev` |
 | `FEISHU_APP_ID` | (可选) 飞书应用 App ID | `cli_xxx` |
 | `FEISHU_APP_SECRET` | (可选) 飞书应用 App Secret | `xxx` |
 | `DATABASE_URL` | (可选) 数据库连接串 | `sqlite://feishu.db` |
 
-> [!TIP]
-> **为什么要配置数据库和 App ID？**
 > 配置后，机器人将支持：
+>
 > 1. **消息合并**：5 分钟内的连续推送将合并为一条消息。
 > 2. **状态更新**：GitHub Actions 的进度会实时更新在同一条消息中，而不是重复发送。
 > 3. **关联回复**：评论（Issue/PR）将以话题模式回复到对应的推送消息下。

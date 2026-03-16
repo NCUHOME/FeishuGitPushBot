@@ -23,6 +23,9 @@ type EventDetail struct {
 	Skip         bool   `json:"skip"`
 	SHA          string `json:"sha"`
 	IsTag        bool   `json:"is_tag"`
+	AuthorAvatars []string `json:"author_avatars"` // 提交者或协作者的头像 URL 列表
+	Action       string `json:"action"` // 事件具体动作
+	ExtraReply    string   `json:"extra_reply"`    // 需要另起一段话题回复的内容
 }
 
 // ParseEvent 解析 GitHub 事件为极简明了的 Detail
@@ -64,6 +67,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 		if len(e.Commits) > 0 {
 			authors := make(map[string]bool)
+			avatarMap := make(map[string]string)
 			for _, c := range e.Commits {
 				login := c.GetAuthor().GetLogin()
 				if login == "" {
@@ -71,9 +75,22 @@ func ParseEvent(event any, eventType string) EventDetail {
 				}
 				if login != "" {
 					authors[login] = true
+					avatarMap[login] = fmt.Sprintf("https://github.com/%s.png", login)
+				}
+				// 检查 Co-authored-by
+				for _, coAuthor := range parseCoAuthors(c.GetMessage()) {
+					authors[coAuthor.Login] = true
+					if coAuthor.Login != "" {
+						avatarMap[coAuthor.Login] = fmt.Sprintf("https://github.com/%s.png", coAuthor.Login)
+					}
 				}
 			}
 			multiAuthor := len(authors) > 1
+
+			// 收集所有头像
+			for _, url := range avatarMap {
+				d.AuthorAvatars = append(d.AuthorAvatars, url)
+			}
 
 			var lines []string
 			for i, c := range e.Commits {
@@ -102,17 +119,32 @@ func ParseEvent(event any, eventType string) EventDetail {
 				authorPart := ""
 				if multiAuthor {
 					login := c.GetAuthor().GetLogin()
-					if login == "" {
-						login = c.GetCommitter().GetLogin()
-					}
 					name := c.GetAuthor().GetName()
 					if name == "" {
 						name = login
 					}
-					if login != "" {
-						authorPart = fmt.Sprintf(" ([%s](https://github.com/%s))", name, login)
-					} else if name != "" {
-						authorPart = fmt.Sprintf(" (%s)", name)
+					
+					authorList := []string{}
+					if name != "" {
+						if login != "" {
+							authorList = append(authorList, fmt.Sprintf("[%s](https://github.com/%s)", name, login))
+						} else {
+							authorList = append(authorList, name)
+						}
+					}
+					
+					// 添加 Co-authors
+					coAuthors := parseCoAuthors(c.GetMessage())
+					for _, ca := range coAuthors {
+						if ca.Login != "" {
+							authorList = append(authorList, fmt.Sprintf("[%s](https://github.com/%s)", ca.Name, ca.Login))
+						} else {
+							authorList = append(authorList, ca.Name)
+						}
+					}
+					
+					if len(authorList) > 0 {
+						authorPart = fmt.Sprintf(" (%s)", strings.Join(authorList, ", "))
 					}
 				}
 
@@ -143,10 +175,12 @@ func ParseEvent(event any, eventType string) EventDetail {
 				d.SHA = sha
 			}
 		}
+		d.Action = "push"
 
 	case *github.PullRequestEvent:
 		pr := e.GetPullRequest()
 		action := e.GetAction()
+		d.Action = action
 		switch action {
 		case "opened":
 			d.Title = "🥕 New PullRequest"
@@ -158,16 +192,31 @@ func ParseEvent(event any, eventType string) EventDetail {
 			}
 		case "reopened":
 			d.Title = "🥕 PullRequest reopened"
+		case "labeled":
+			d.Title = "🏷️ PR Labeled"
+		case "unlabeled":
+			d.Title = "🏷️ PR Unlabeled"
 		default:
 			d.Title = fmt.Sprintf("📦 PR %s", action)
 		}
 
-		body := SafeText(strings.TrimSpace(pr.GetBody()), 1500)
-		if body != "" {
-			d.Text = fmt.Sprintf("**%s**\n%s", pr.GetTitle(), body)
+		if action == "labeled" || action == "unlabeled" {
+			label := e.GetLabel().GetName()
+			d.Text = fmt.Sprintf("**%s**\n\nLabel: `%s`", pr.GetTitle(), label)
 		} else {
-			d.Text = fmt.Sprintf("**%s**", pr.GetTitle())
+			text, foldable := ProcessGithubMarkdown(pr.GetBody())
+			// 如果内容过长 (比如超过 800 字)，则放入 ExtraReply
+			if len(text) > 800 {
+				d.Text = fmt.Sprintf("**%s**\n*(Content too long, see reply)*", pr.GetTitle())
+				d.ExtraReply = text
+			} else if text != "" {
+				d.Text = fmt.Sprintf("**%s**\n%s", pr.GetTitle(), text)
+			} else {
+				d.Text = fmt.Sprintf("**%s**", pr.GetTitle())
+			}
+			d.FoldableBody = foldable
 		}
+
 		d.RefName = fmt.Sprintf("%s ➔ %s", pr.GetHead().GetRef(), pr.GetBase().GetRef())
 		d.URL = pr.GetHTMLURL()
 
@@ -191,17 +240,64 @@ func ParseEvent(event any, eventType string) EventDetail {
 			d.Text = fmt.Sprintf("**%s**", iss.GetTitle())
 		}
 		d.URL = iss.GetHTMLURL()
+		d.Action = action
 
 	case *github.IssueCommentEvent:
 		iss := e.GetIssue()
-		d.Title = fmt.Sprintf("🌻 Comment %s", e.GetAction())
-		commentBody := SafeText(strings.TrimSpace(e.GetComment().GetBody()), 1500)
-		if commentBody != "" {
+		action := e.GetAction()
+		d.Title = fmt.Sprintf("🌻 Comment %s", action)
+		d.Action = action
+
+		body := e.GetComment().GetBody()
+		if action == "edited" && e.Changes != nil && e.Changes.Body != nil && e.Changes.Body.From != nil {
+			body = GetDiffOnlyAdded(*e.Changes.Body.From, body)
+		}
+
+		commentBody := SafeText(strings.TrimSpace(body), 1500)
+		if len(commentBody) > 1000 {
+			d.Text = fmt.Sprintf("**%s**\n*(Comment too long, see reply)*", iss.GetTitle())
+			d.ExtraReply = commentBody
+		} else if commentBody != "" {
 			d.Text = fmt.Sprintf("**%s**\n\n**Content**\n%s", iss.GetTitle(), commentBody)
 		} else {
 			d.Text = fmt.Sprintf("**%s**", iss.GetTitle())
 		}
 		d.URL = e.GetComment().GetHTMLURL()
+
+	case *github.PullRequestReviewCommentEvent:
+		pr := e.GetPullRequest()
+		action := e.GetAction()
+		d.Title = fmt.Sprintf("💬 PR Comment %s", action)
+		d.Action = action
+
+		body := e.GetComment().GetBody()
+		if action == "edited" && e.Changes != nil && e.Changes.Body != nil && e.Changes.Body.From != nil {
+			body = GetDiffOnlyAdded(*e.Changes.Body.From, body)
+		}
+
+		commentBody := SafeText(strings.TrimSpace(body), 1500)
+		if commentBody != "" {
+			d.Text = fmt.Sprintf("**%s**\n\n**Content**\n%s", pr.GetTitle(), commentBody)
+		} else {
+			d.Text = fmt.Sprintf("**%s**", pr.GetTitle())
+		}
+		d.URL = e.GetComment().GetHTMLURL()
+
+	case *github.PullRequestReviewEvent:
+		pr := e.GetPullRequest()
+		action := e.GetAction()
+		d.Title = fmt.Sprintf("🧐 PR Review %s", action)
+		d.Action = action
+
+		body := e.GetReview().GetBody()
+		// PullRequestReviewEvent 在 go-github 中目前没有 Changes 字段
+		reviewBody := SafeText(strings.TrimSpace(body), 1500)
+		if reviewBody != "" {
+			d.Text = fmt.Sprintf("**%s**\n\n**Review**\n%s", pr.GetTitle(), reviewBody)
+		} else {
+			d.Text = fmt.Sprintf("**%s**", pr.GetTitle())
+		}
+		d.URL = e.GetReview().GetHTMLURL()
 
 	case *github.WorkflowRunEvent:
 		wr := e.GetWorkflowRun()
@@ -357,6 +453,18 @@ func ParseEvent(event any, eventType string) EventDetail {
 			// 其他 edited 事件（如修改描述、Logo 等）通常比较琐碎，默认跳过
 			d.Skip = true
 		}
+		d.Action = action
+
+	case *github.OrganizationEvent:
+		d.Title = fmt.Sprintf("🏢 Org %s: %s", e.GetOrganization().GetLogin(), e.GetAction())
+		d.Text = fmt.Sprintf("Action: **%s**\nMember: **%s**", e.GetAction(), e.GetMembership().GetUser().GetLogin())
+		d.Action = e.GetAction()
+		d.URL = e.GetOrganization().GetHTMLURL()
+
+	case *github.MembershipEvent:
+		d.Title = fmt.Sprintf("👥 Membership %s", e.GetAction())
+		d.Text = fmt.Sprintf("Action: **%s**\nMember: **%s**\nScope: **%s**", e.GetAction(), e.GetMember().GetLogin(), e.GetScope())
+		d.Action = e.GetAction()
 	}
 	return d
 }
@@ -368,13 +476,17 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 	card.Header.Template = GetTemplate(detail.Title)
 
 	// --- 0. 回复上下文 (如果存在) ---
-	if detail.ReplyToTitle != "" {
+	if detail.ReplyToTitle != "" && detail.Action != "edited" {
 		card.AddNoteText(fmt.Sprintf("| Reply to %s", detail.ReplyToTitle))
 		card.AddDivider()
 	}
 
 	// --- 1. 摘要信息 (仓库 / 分支 / [头像] 提交人) ---
-	repoPart := fmt.Sprintf("📦 [%s](%s)", repo, repoUrl)
+	repoPart := ""
+	if repo != "" {
+		repoPart = fmt.Sprintf("📦 [%s](%s)", repo, repoUrl)
+	}
+
 	refPart := ""
 	if detail.RefName != "" {
 		link := detail.RefURL
@@ -387,69 +499,100 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 		}
 
 		if detail.IsTag {
-			refPart = fmt.Sprintf(" / 🏷️ **Tag** [%s](%s)%s", detail.RefName, link, shaPart)
+			refPart = fmt.Sprintf("🏷️ **Tag** [%s](%s)%s", detail.RefName, link, shaPart)
 		} else {
-			refPart = fmt.Sprintf(" / 🌿 **Branch** [%s](%s)%s", detail.RefName, link, shaPart)
+			refPart = fmt.Sprintf("🌿 **Branch** [%s](%s)%s", detail.RefName, link, shaPart)
 		}
 	}
-	repoAndBranchText := repoPart + refPart + " / "
-	senderText := fmt.Sprintf("[%s](%s)", sender, senderUrl)
 
-	imgKey := ""
-	if avatarUrl != "" {
-		imgKey = GetImageKey(ctx, avatarUrl)
+	var metaParts []string
+	if repoPart != "" {
+		metaParts = append(metaParts, repoPart)
+	}
+	if refPart != "" {
+		metaParts = append(metaParts, refPart)
+	}
+	metaText := strings.Join(metaParts, " / ")
+	if metaText != "" {
+		metaText += " / "
 	}
 
-	if imgKey != "" {
+	senderText := fmt.Sprintf("[%s](%s)", sender, senderUrl)
+
+	var avatarElements []map[string]any
+	// 如果有多个作者头像，优先显示它们
+	avatarsToDisplay := detail.AuthorAvatars
+	if len(avatarsToDisplay) == 0 && avatarUrl != "" {
+		avatarsToDisplay = []string{avatarUrl}
+	}
+
+	// 最多显示 3 个头像，防止占用过宽
+	maxAvatars := 3
+	for i, url := range avatarsToDisplay {
+		if i >= maxAvatars {
+			break
+		}
+		key := GetImageKey(ctx, url)
+		if key != "" {
+			avatarElements = append(avatarElements, map[string]any{
+				"tag":          "img",
+				"img_key":      key,
+				"custom_width": 24,
+				"mode":         "crop_center",
+				"alt": map[string]string{
+					"tag":     "plain_text",
+					"content": "avatar",
+				},
+			})
+		}
+	}
+
+	if len(avatarElements) > 0 {
+		columns := []map[string]any{
+			{
+				"tag":            "column",
+				"width":          "auto",
+				"vertical_align": "center",
+				"elements": []map[string]any{
+					{
+						"tag":     "markdown",
+						"content": metaText,
+					},
+				},
+			},
+		}
+
+		// 为每个头像增加一个列
+		for _, el := range avatarElements {
+			columns = append(columns, map[string]any{
+				"tag":            "column",
+				"width":          "auto",
+				"vertical_align": "center",
+				"elements":       []map[string]any{el},
+			})
+		}
+
+		columns = append(columns, map[string]any{
+			"tag":            "column",
+			"width":          "weight",
+			"weight":         1,
+			"vertical_align": "center",
+			"elements": []map[string]any{
+				{
+					"tag":     "markdown",
+					"content": senderText,
+				},
+			},
+		})
+
 		card.Body.Elements = append(card.Body.Elements, map[string]any{
 			"tag":                "column_set",
 			"flex_mode":          "none",
 			"horizontal_spacing": "small",
-			"columns": []map[string]any{
-				{
-					"tag":            "column",
-					"width":          "auto",
-					"vertical_align": "center",
-					"elements": []map[string]any{
-						{
-							"tag":     "markdown",
-							"content": repoAndBranchText,
-						},
-					},
-				},
-				{
-					"tag":            "column",
-					"width":          "auto",
-					"vertical_align": "center",
-					"elements": []map[string]any{
-						{
-							"tag":          "img",
-							"img_key":      imgKey,
-							"custom_width": 24, // 头像更精简一点
-							"mode":         "crop_center",
-							"alt": map[string]string{
-								"tag":     "plain_text",
-								"content": "avatar",
-							},
-						},
-					},
-				},
-				{
-					"tag":            "column",
-					"width":          "weight",
-					"weight":         1,
-					"vertical_align": "center",
-					"elements": []map[string]any{
-						{
-							"tag":     "markdown",
-							"content": senderText,
-						},
-					},
-				},
-			},
+			"columns":            columns,
 		})
 	} else {
-		card.AddMarkdown(repoAndBranchText + "👤 " + senderText)
+		card.AddMarkdown(metaText + "👤 " + senderText)
 	}
 
 	// --- 2. 详情内容 ---
@@ -612,4 +755,101 @@ func FormatDuration(d time.Duration) string {
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// ProcessGithubMarkdown 转换 GitHub Markdown 为飞书卡片 Markdown，并提取折叠内容
+func ProcessGithubMarkdown(s string) (text string, foldable string) {
+	if s == "" {
+		return "", ""
+	}
+
+	// 1. 预处理 Mermaid
+	s = strings.ReplaceAll(s, "```mermaid", "```")
+
+	// 2. 提取 <details> <summary> 内容作为 FoldableBody
+	// 目前飞书 Markdown 不支持 details/summary，我们将其提取到 FoldableBody 中
+	reDetails := regexp.MustCompile(`(?s)<details>\s*<summary>(.*?)</summary>(.*?)</details>`)
+	var foldables []string
+	
+	// 提取并替换
+	processed := reDetails.ReplaceAllStringFunc(s, func(m string) string {
+		match := reDetails.FindStringSubmatch(m)
+		if len(match) > 2 {
+			title := strings.TrimSpace(match[1])
+			// 移除 HTML 标签，只保留纯文本作为标题
+			title = regexp.MustCompile(`<.*?>`).ReplaceAllString(title, "")
+			content := strings.TrimSpace(match[2])
+			foldables = append(foldables, fmt.Sprintf("**%s**\n%s", title, content))
+		}
+		return "" // 将其从主文档中移除，放入折叠面板
+	})
+
+	// 3. 简单的 Markdown 转换 (如处理一些 GitHub 特有的格式)
+	processed = strings.TrimSpace(processed)
+	
+	// 4. 安全阶段 (截断长度，转义 < >)
+	text = SafeText(processed, 2000)
+	foldable = SafeText(strings.Join(foldables, "\n\n"), 3000)
+
+	return text, foldable
+}
+
+// GetDiffOnlyAdded 生成仅包含新增内容的 Diff
+func GetDiffOnlyAdded(old, new string) string {
+	if old == "" {
+		return new
+	}
+
+	oldLines := strings.Split(old, "\n")
+	oldMap := make(map[string]bool)
+	for _, l := range oldLines {
+		oldMap[l] = true
+	}
+
+	newLines := strings.Split(new, "\n")
+	var diff []string
+	for _, l := range newLines {
+		if !oldMap[l] {
+			diff = append(diff, "+ "+l)
+		}
+	}
+
+	if len(diff) == 0 {
+		return ""
+	}
+	return strings.Join(diff, "\n")
+}
+
+var coAuthorRegex = regexp.MustCompile(`(?im)^Co-authored-by:\s*(.+?)\s*<(.+?)>`)
+
+type AuthorInfo struct {
+	Name  string
+	Login string
+}
+
+// parseCoAuthors 解析提交信息中的共同作者
+func parseCoAuthors(msg string) []AuthorInfo {
+	matches := coAuthorRegex.FindAllStringSubmatch(msg, -1)
+	var authors []AuthorInfo
+	for _, m := range matches {
+		if len(m) > 2 {
+			name := strings.TrimSpace(m[1])
+			email := strings.TrimSpace(m[2])
+			login := ""
+			// 尝试从邮箱提取用户名 (如果是 GitHub 自动生成的 noreply 邮箱)
+			if strings.Contains(email, "@users.noreply.github.com") {
+				parts := strings.Split(email, "@")
+				if len(parts) > 0 {
+					loginParts := strings.Split(parts[0], "+")
+					login = loginParts[len(loginParts)-1]
+				}
+			}
+			// 如果提取不到，且名字不含空格，尝试把名字当作 login
+			if login == "" && !strings.Contains(name, " ") {
+				login = name
+			}
+			authors = append(authors, AuthorInfo{Name: name, Login: login})
+		}
+	}
+	return authors
 }

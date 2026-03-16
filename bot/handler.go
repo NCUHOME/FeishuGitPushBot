@@ -22,6 +22,24 @@ func GithubHandler(c *gin.Context) {
 	}
 
 	eventType := github.WebHookType(c.Request)
+	
+	// 检查是否忽略该用户
+	if C.Github.IgnoreUsers != "" {
+		var m map[string]any
+		_ = json.Unmarshal(payload, &m)
+		sender := ext(m, "sender", "login")
+		if sender != "" {
+			ignoredUsers := strings.Split(C.Github.IgnoreUsers, ",")
+			for _, u := range ignoredUsers {
+				if strings.TrimSpace(u) == sender {
+					slog.Info("Event ignored: sender in ignore list", "sender", sender, "event", eventType)
+					c.JSON(200, gin.H{"code": 0, "msg": "ignored user"})
+					return
+				}
+			}
+		}
+	}
+
 	event, err := github.ParseWebHook(eventType, payload)
 	if err != nil {
 		slog.Error("Failed to parse Webhook", "error", err)
