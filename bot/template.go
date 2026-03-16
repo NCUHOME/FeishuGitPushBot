@@ -24,6 +24,7 @@ type EventDetail struct {
 	SHA          string `json:"sha"`
 	IsTag        bool   `json:"is_tag"`
 	AuthorAvatars []string `json:"author_avatars"` // 提交者或协作者的头像 URL 列表
+	AuthorLogins  []string `json:"author_logins"`  // 提交者或协作者的 login 列表（与 AuthorAvatars 顺序对应）
 	Action       string `json:"action"` // 事件具体动作
 	ExtraReply    string   `json:"extra_reply"`    // 需要另起一段话题回复的内容
 }
@@ -87,9 +88,10 @@ func ParseEvent(event any, eventType string) EventDetail {
 			}
 			multiAuthor := len(authors) > 1
 
-			// 收集所有头像
-			for _, url := range avatarMap {
+			// 收集所有头像和 login（保持顺序一致）
+			for login, url := range avatarMap {
 				d.AuthorAvatars = append(d.AuthorAvatars, url)
+				d.AuthorLogins = append(d.AuthorLogins, login)
 			}
 
 			var lines []string
@@ -218,6 +220,9 @@ func ParseEvent(event any, eventType string) EventDetail {
 		}
 
 		d.RefName = fmt.Sprintf("%s ➔ %s", pr.GetHead().GetRef(), pr.GetBase().GetRef())
+		if headRepo := pr.GetHead().GetRepo(); headRepo != nil {
+			d.RefURL = fmt.Sprintf("%s/tree/%s", headRepo.GetHTMLURL(), pr.GetHead().GetRef())
+		}
 		d.URL = pr.GetHTMLURL()
 
 	case *github.IssuesEvent:
@@ -336,7 +341,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		if repoUrl != "" && ref != "" {
 			d.RefURL = fmt.Sprintf("%s/tree/%s", repoUrl, ref)
 		}
-		d.Title = fmt.Sprintf("%s Workflow %s: %s", icon, strings.Title(stateVerb), workflowName)
+		d.Title = fmt.Sprintf("%s Workflow %s: %s", icon, titleCase(stateVerb), workflowName)
 
 		var lines []string
 		durationPart := ""
@@ -380,7 +385,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 			}
 		}
 
-		d.Title = fmt.Sprintf("%s Job %s: %s", icon, strings.Title(stateVerb), jobName)
+		d.Title = fmt.Sprintf("%s Job %s: %s", icon, titleCase(stateVerb), jobName)
 
 		var lines []string
 		// 如果有 workflow_name 则显示为 Workflow / Job 格式
@@ -400,6 +405,10 @@ func ParseEvent(event any, eventType string) EventDetail {
 		lines = append(lines, fmt.Sprintf("%s job **%s** %s%s", icon, displayJobName, stateVerb, durationPart))
 
 		d.Text = strings.Join(lines, "\n")
+		d.RefName = wj.GetHeadBranch()
+		if repoUrl := e.GetRepo().GetHTMLURL(); repoUrl != "" && wj.GetHeadBranch() != "" {
+			d.RefURL = fmt.Sprintf("%s/tree/%s", repoUrl, wj.GetHeadBranch())
+		}
 		d.URL = wj.GetHTMLURL()
 
 	case *github.WatchEvent:
@@ -469,14 +478,58 @@ func ParseEvent(event any, eventType string) EventDetail {
 	return d
 }
 
-// BuildCard 构建现代化、高可读性的飞书卡片 (V2)
+// titleCase 将字符串首字母大写（替代已废弃的 strings.Title）
+func titleCase(s string) string {
+	if s == "" {
+		return ""
+	}
+	runes := []rune(s)
+	if runes[0] >= 'a' && runes[0] <= 'z' {
+		runes[0] -= 32
+	}
+	return string(runes)
+}
+
+// cardColor 枚举卡片标题颜色，避免依赖标题 emoji 做字符串匹配
+type cardColor string
+
+const (
+	cardColorBlue   cardColor = "blue"
+	cardColorGreen  cardColor = "green"
+	cardColorRed    cardColor = "red"
+	cardColorOrange cardColor = "orange"
+	cardColorGrey   cardColor = "grey"
+	cardColorPurple cardColor = "purple"
+)
+
+// GetTemplate 根据标题中的 emoji 返回对应的飞书卡片标题色
+// 支持颜色: blue / green / red / orange / grey / purple / indigo / wathet / turquoise / yellow / lime / pink / carmine
+func GetTemplate(title string) string {
+	if ContainsAny(title, "❌", "💥", "💔") {
+		return string(cardColorRed)
+	}
+	if ContainsAny(title, "✅") {
+		return string(cardColorGreen)
+	}
+	if ContainsAny(title, "⏳", "🏃") {
+		return string(cardColorOrange)
+	}
+	if ContainsAny(title, "💜") {
+		return string(cardColorPurple)
+	}
+	if ContainsAny(title, "🗑️") {
+		return string(cardColorGrey)
+	}
+	return string(cardColorBlue)
+}
+
+// BuildCard 构建符合飞书卡片 V2 规范的消息卡片
 func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl string, detail EventDetail) *Card {
 	card := NewCard()
-	card.Header.Title = Text{Tag: "plain_text", Content: detail.Title}
+	card.Header.Title = CardText{Tag: "plain_text", Content: detail.Title}
 	card.Header.Template = GetTemplate(detail.Title)
 
-
-	// --- 1. 摘要信息 (仓库 / 分支 / [头像] 提交人) ---
+	// --- 1. 摘要信息行：仓库 / 分支 / 提交人（含头像） ---
 	repoPart := ""
 	if repo != "" {
 		repoPart = fmt.Sprintf("📦 [%s](%s)", repo, repoUrl)
@@ -490,13 +543,12 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 		}
 		shaPart := ""
 		if detail.SHA != "" {
-			shaPart = fmt.Sprintf(" ([%s](%s/commit/%s))", detail.SHA, repoUrl, detail.SHA)
+			shaPart = fmt.Sprintf(" ([`%s`](%s/commit/%s))", detail.SHA, repoUrl, detail.SHA)
 		}
-
 		if detail.IsTag {
-			refPart = fmt.Sprintf("🏷️ **Tag** [%s](%s)%s", detail.RefName, link, shaPart)
+			refPart = fmt.Sprintf("🏷️ [%s](%s)%s", detail.RefName, link, shaPart)
 		} else {
-			refPart = fmt.Sprintf("🌿 **Branch** [%s](%s)%s", detail.RefName, link, shaPart)
+			refPart = fmt.Sprintf("🌿 [%s](%s)%s", detail.RefName, link, shaPart)
 		}
 	}
 
@@ -508,31 +560,48 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 		metaParts = append(metaParts, refPart)
 	}
 	metaText := strings.Join(metaParts, " / ")
-	if metaText != "" {
-		metaText += " / "
+
+	// 构建发送者文本
+	senderText := fmt.Sprintf("[%s](%s)", sender, senderUrl)
+	if len(detail.AuthorLogins) > 1 {
+		var links []string
+		for _, login := range detail.AuthorLogins {
+			links = append(links, fmt.Sprintf("[%s](https://github.com/%s)", login, login))
+		}
+		senderText = strings.Join(links, "  ")
+	} else if len(detail.AuthorLogins) == 1 {
+		login := detail.AuthorLogins[0]
+		senderText = fmt.Sprintf("[%s](https://github.com/%s)", login, login)
 	}
 
-	senderText := fmt.Sprintf("[%s](%s)", sender, senderUrl)
-
-	var avatarElements []map[string]any
-	// 如果有多个作者头像，优先显示它们
+	// 收集最多 3 个头像的 img_key（飞书列数有上限，超出会导致排版混乱）
 	avatarsToDisplay := detail.AuthorAvatars
 	if len(avatarsToDisplay) == 0 && avatarUrl != "" {
 		avatarsToDisplay = []string{avatarUrl}
 	}
+	const maxAvatars = 3
+	if len(avatarsToDisplay) > maxAvatars {
+		avatarsToDisplay = avatarsToDisplay[:maxAvatars]
+	}
 
-	// 最多显示 3 个头像，防止占用过宽
-	maxAvatars := 3
-	for i, url := range avatarsToDisplay {
-		if i >= maxAvatars {
-			break
+	var resolvedAvatars []string // 已缓存的 img_key 列表
+	for _, u := range avatarsToDisplay {
+		if key := GetImageKey(ctx, u); key != "" {
+			resolvedAvatars = append(resolvedAvatars, key)
 		}
-		key := GetImageKey(ctx, url)
-		if key != "" {
-			avatarElements = append(avatarElements, map[string]any{
+	}
+
+	// 构建摘要行：用 column_set 排列 [meta文本] [头像...] [发送者]
+	// 头像全部合并进一个列（inline 排列），避免列数过多
+	if len(resolvedAvatars) > 0 {
+		// 将所有头像以小图标方式拼成一段 markdown（飞书 lark_md 不支持 img，
+		// 所以头像列仍用独立 img 元素，但合并到单个 column 的 elements 数组里）
+		avatarEls := make([]any, 0, len(resolvedAvatars))
+		for _, key := range resolvedAvatars {
+			avatarEls = append(avatarEls, map[string]any{
 				"tag":          "img",
 				"img_key":      key,
-				"custom_width": 24,
+				"custom_width": 20,
 				"mode":         "crop_center",
 				"alt": map[string]string{
 					"tag":     "plain_text",
@@ -540,45 +609,36 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 				},
 			})
 		}
-	}
 
-	if len(avatarElements) > 0 {
-		columns := []map[string]any{
-			{
+		columns := []any{
+			// 左列：仓库+分支
+			map[string]any{
+				"tag":            "column",
+				"width":          "weighted",
+				"weight":         3,
+				"vertical_align": "center",
+				"elements": []any{
+					map[string]any{"tag": "markdown", "content": metaText},
+				},
+			},
+			// 中列：头像（多个 img 叠在同一列）
+			map[string]any{
 				"tag":            "column",
 				"width":          "auto",
 				"vertical_align": "center",
-				"elements": []map[string]any{
-					{
-						"tag":     "markdown",
-						"content": metaText,
-					},
-				},
+				"elements":       avatarEls,
 			},
-		}
-
-		// 为每个头像增加一个列
-		for _, el := range avatarElements {
-			columns = append(columns, map[string]any{
+			// 右列：发送者链接
+			map[string]any{
 				"tag":            "column",
-				"width":          "auto",
+				"width":          "weighted",
+				"weight":         2,
 				"vertical_align": "center",
-				"elements":       []map[string]any{el},
-			})
-		}
-
-		columns = append(columns, map[string]any{
-			"tag":            "column",
-			"width":          "weight",
-			"weight":         1,
-			"vertical_align": "center",
-			"elements": []map[string]any{
-				{
-					"tag":     "markdown",
-					"content": senderText,
+				"elements": []any{
+					map[string]any{"tag": "markdown", "content": senderText},
 				},
 			},
-		})
+		}
 
 		card.Body.Elements = append(card.Body.Elements, map[string]any{
 			"tag":                "column_set",
@@ -587,7 +647,12 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 			"columns":            columns,
 		})
 	} else {
-		card.AddMarkdown(metaText + "👤 " + senderText)
+		// 无头像缓存时退回到纯文本摘要行
+		line := "👤 " + senderText
+		if metaText != "" {
+			line = metaText + " / " + line
+		}
+		card.AddMarkdown(line)
 	}
 
 	// --- 2. 详情内容 ---
@@ -596,55 +661,33 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 		card.AddMarkdown(detail.Text)
 	}
 
+	// --- 3. 可折叠的附加内容（PR body 中的 <details> 块等）---
 	if detail.FoldableBody != "" {
-		card.AddCollapsiblePanel(detail.FoldableBody)
+		card.AddCollapsiblePanel("📝 展开查看详情", detail.FoldableBody)
 	}
 
-	// --- 3. 动态操作按钮 ---
-	// 只有非 Push 事件才显示详情按钮 (Commit 不显示)
-	if detail.URL != "" && !strings.Contains(detail.Title, "commits") && !strings.Contains(detail.Title, "Created:") && !strings.Contains(detail.Title, "Deleted:") {
-		btnText := "View"
+	// --- 4. 操作按钮（V2 规范：必须放在 action 容器内）---
+	// Push / 删除 / 新建分支等事件不显示详情按钮
+	skipBtn := strings.Contains(detail.Title, "commits") ||
+		strings.Contains(detail.Title, "Deleted") ||
+		strings.Contains(detail.Title, "Created")
+	if detail.URL != "" && !skipBtn {
 		btnType := "primary"
-
-		if strings.Contains(detail.Title, "Workflow") {
-			if strings.Contains(detail.Title, "❌") || strings.Contains(detail.Title, "💥") {
-				btnType = "danger"
-			}
+		if ContainsAny(detail.Title, "❌", "💥") {
+			btnType = "danger"
 		}
 
-		card.AddAction(Button{
-			Tag:  "button",
-			Text: Text{Tag: "plain_text", Content: btnText},
-			Url:  detail.URL,
-			Type: btnType,
-		})
-
-		// 对于失败的任务，可以额外增加一个链接
+		btns := []ActionButton{
+			{Text: "View Details", URL: detail.URL, Type: btnType},
+		}
+		// 失败时额外提供分支快捷链接
 		if btnType == "danger" && detail.RefURL != "" {
-			card.AddAction(Button{
-				Tag:  "button",
-				Text: Text{Tag: "plain_text", Content: "View Branch"},
-				Url:  detail.RefURL,
-				Type: "default",
-			})
+			btns = append(btns, ActionButton{Text: "View Branch", URL: detail.RefURL, Type: "default"})
 		}
+		card.AddActions("flow", btns...)
 	}
 
 	return card
-}
-
-// GetTemplate 根据标题中的 emoji 返回对应的卡片颜色模板
-func GetTemplate(title string) string {
-	if ContainsAny(title, "❌", "💥", "💔", "🔴") {
-		return "red"
-	}
-	if ContainsAny(title, "✅", "💜", "🟢") {
-		return "green"
-	}
-	if ContainsAny(title, "⚠️", "🏃", "🟡", "⏳") {
-		return "orange"
-	}
-	return "blue"
 }
 
 // ContainsAny 检查字符串是否包含任意一个子串
