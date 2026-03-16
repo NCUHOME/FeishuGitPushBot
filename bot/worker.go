@@ -94,6 +94,29 @@ func processWebhookEvent(event WebhookEvent) error {
 	avatarUrl := ext(m, "sender", "avatar_url")
 	ref := ext(m, "ref")
 
+	// 检查是否为 Bot 用户
+	isBotUser := false
+	if C.Github.BotUsers != "" && sender != "" {
+		for _, u := range strings.Split(C.Github.BotUsers, ",") {
+			if strings.TrimSpace(u) == sender {
+				isBotUser = true
+				break
+			}
+		}
+	}
+	// Bot 用户只处理 PR 和 Comment 事件，其他一律跳过
+	if isBotUser {
+		isBotAllowed := event.EventType == "pull_request" ||
+			event.EventType == "pull_request_review" ||
+			event.EventType == "pull_request_review_comment" ||
+			event.EventType == "issue_comment" ||
+			event.EventType == "issues"
+		if !isBotAllowed {
+			slog.Info("Bot user event skipped", "sender", sender, "event", event.EventType)
+			return nil
+		}
+	}
+
 	// 3. 构建追踪 ID
 	var githubID string
 	switch event.EventType {
@@ -210,19 +233,29 @@ func processWebhookEvent(event WebhookEvent) error {
 		}
 	}
 
+	// Bot 用户的事件必须找到父消息才发送，否则跳过
+	if isBotUser && parentID == "" {
+		slog.Info("Bot user event skipped: no parent message found", "sender", sender, "event", event.EventType)
+		return nil
+	}
+
 	// 6. 发送新消息
-	// 获取头像缓存状态，决定是否需要后续异步刷新
+	// 检查所有需要显示的头像缓存状态，有任意一个未缓存或过期就标记 pending
+	allAvatars := detail.AuthorAvatars
+	if len(allAvatars) == 0 && avatarUrl != "" {
+		allAvatars = []string{avatarUrl}
+	}
 	imageStatus := "done"
-	if avatarUrl != "" {
+	for _, url := range allAvatars {
 		var cache ImageCache
-		if err := DB.NewSelect().Model(&cache).Where("url = ?", avatarUrl).Scan(ctx); err == nil {
-			// 如果缓存超过 24 小时，标记为待刷新，但在发送时先沿用旧缓存
+		if err := DB.NewSelect().Model(&cache).Where("url = ?", url).Scan(ctx); err == nil {
 			if time.Since(cache.UpdatedAt) > 24*time.Hour {
 				imageStatus = "pending"
+				break
 			}
 		} else {
-			// 完全没缓存，标记为待拉取
 			imageStatus = "pending"
+			break
 		}
 	}
 
@@ -245,6 +278,11 @@ func processWebhookEvent(event WebhookEvent) error {
 	if detail.ExtraReply != "" && msgID != "" {
 		replyCard := NewCard()
 		replyCard.AddMarkdown(detail.ExtraReply)
+		_, _ = ReplyToMessage(msgID, replyCard)
+	}
+	if detail.FoldableBody != "" && msgID != "" {
+		replyCard := NewCard()
+		replyCard.AddMarkdown(detail.FoldableBody)
 		_, _ = ReplyToMessage(msgID, replyCard)
 	}
 
@@ -291,19 +329,52 @@ func imageRefreshWorker() {
 }
 
 func refreshOneImage(record MessageRecord) {
-	if record.AvatarURL == "" {
+	// 1. 解析保存的卡片详情，获取所有需要刷新的头像 URL
+	var detail EventDetail
+	_ = json.Unmarshal([]byte(record.Content), &detail)
+
+	allAvatars := detail.AuthorAvatars
+	if len(allAvatars) == 0 && record.AvatarURL != "" {
+		allAvatars = []string{record.AvatarURL}
+	}
+	if len(allAvatars) == 0 {
 		_, _ = DB.NewUpdate().Model(&record).Set("image_status = ?", "done").WherePK().Exec(context.Background())
 		return
 	}
 
-	// 1. 同步尝试上传图片。syncUploadImage 内部会自动写入 ImageCache
-	imgKey := syncUploadImage(context.Background(), record.AvatarURL)
-	if imgKey == "" {
-		// slog.Debug("图片刷新：上传仍未成功", "url", record.AvatarURL)
+	// 2. 依次上传所有头像，每个最多重试 10 次，指数退避
+	allUploaded := true
+	for _, avatarURL := range allAvatars {
+		uploaded := false
+		for attempt := 0; attempt < 10; attempt++ {
+			if attempt > 0 {
+				backoff := time.Duration(attempt*attempt) * 3 * time.Second
+				slog.Info("Image refresh: retrying avatar upload",
+					"url", avatarURL, "attempt", attempt+1, "backoff", backoff)
+				time.Sleep(backoff)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			imgKey := syncUploadImage(ctx, avatarURL)
+			cancel()
+			if imgKey != "" {
+				slog.Info("Image refresh: avatar uploaded", "url", avatarURL, "img_key", imgKey)
+				uploaded = true
+				break
+			}
+			slog.Warn("Image refresh: avatar upload failed", "url", avatarURL, "attempt", attempt+1)
+		}
+		if !uploaded {
+			slog.Error("Image refresh: giving up on avatar after 10 attempts", "url", avatarURL)
+			allUploaded = false
+		}
+	}
+
+	if !allUploaded {
+		// 部分头像上传失败，本轮不更新卡片，等下一轮重试
 		return
 	}
 
-	// 2. 获取原始 Webhook 事件，用于重建卡片所需的元数据 (repoUrl, sender 等)
+	// 3. 获取原始 Webhook 事件元数据
 	var event WebhookEvent
 	err := DB.NewSelect().Model(&event).Where("id = ?", record.EventID).Scan(context.Background())
 	if err != nil {
@@ -317,24 +388,20 @@ func refreshOneImage(record MessageRecord) {
 	sender := ext(m, "sender", "login")
 	senderUrl := ext(m, "sender", "html_url")
 
-	// 3. 解析保存的卡片详情
-	var detail EventDetail
-	_ = json.Unmarshal([]byte(record.Content), &detail)
-
-	// 4. 重建卡片。此时 BuildCard 内部的 GetImageKey 会击中刚刚生成的缓存
-	// 设定一个 5s 超时以保证稳健
+	// 4. 重建卡片，此时所有头像的 img_key 均已缓存
 	buildCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	card := BuildCard(buildCtx, record.RepoName, repoUrl, sender, senderUrl, record.AvatarURL, detail)
 
-	// 5. 调用飞书 API 更新原有消息卡片，带上头像
-	err = UpdateMessage(record.FeishuMessageID, card)
-	if err != nil {
-		slog.Error("Image refresh: failed to update message card", "message_id", record.FeishuMessageID, "error", err)
+	// 5. 更新飞书消息卡片
+	if err = UpdateMessage(record.FeishuMessageID, card); err != nil {
+		slog.Error("Image refresh: failed to update message card",
+			"message_id", record.FeishuMessageID, "error", err)
 		return
 	}
 
-	// 6. 成功，更新记录状态
+	// 6. 标记完成
 	_, _ = DB.NewUpdate().Model(&record).Set("image_status = ?", "done").WherePK().Exec(context.Background())
-	slog.Info("Image refresh successful, message card updated", "message_id", record.FeishuMessageID)
+	slog.Info("Image refresh successful, all avatars updated",
+		"message_id", record.FeishuMessageID, "avatar_count", len(allAvatars))
 }

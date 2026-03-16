@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 	"sync"
 	"time"
 
@@ -20,7 +19,7 @@ import (
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
 
-var http = resty.New().
+var httpClient = resty.New().
 	SetTimeout(30 * time.Second).
 	SetRetryCount(2).
 	SetRetryWaitTime(2 * time.Second)
@@ -38,32 +37,24 @@ func GetLarkClient() *lark.Client {
 	return larkClient
 }
 
-
-
-// GetImageKey 获取缓存中的飞书 img_key (极速返回，不阻塞)
+// GetImageKey 从缓存中获取飞书 img_key（纯 DB 查询，不阻塞）
 func GetImageKey(ctx context.Context, url string) string {
-	if url == "" {
+	if url == "" || DB == nil {
 		return ""
 	}
-
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	var cache ImageCache
-	if DB != nil {
-		// 仅从数据库读取，不进行任何同步网络操作
-		if err := DB.NewSelect().Model(&cache).Where("url = ?", url).Scan(ctx); err == nil {
-			return cache.ImgKey
-		}
+	if err := DB.NewSelect().Model(&cache).Where("url = ?", url).Scan(ctx); err == nil {
+		return cache.ImgKey
 	}
-
 	return ""
 }
 
-// syncUploadImage 同步执行下载、哈希计算并上传到飞书
+// syncUploadImage 同步下载并上传图片到飞书，返回 img_key
 func syncUploadImage(ctx context.Context, url string) string {
-	// 下载图片，尊重 context 超时
-	imageRes, err := http.R().SetContext(ctx).Get(url)
+	imageRes, err := httpClient.R().SetContext(ctx).Get(url)
 	if err != nil || imageRes.IsError() {
 		return ""
 	}
@@ -74,7 +65,6 @@ func syncUploadImage(ctx context.Context, url string) string {
 	client := GetLarkClient()
 	var resp *larkim.CreateImageResp
 
-	// 重试逻辑
 	for i := 0; i < 3; i++ {
 		uploadCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		resp, err = client.Im.Image.Create(uploadCtx, larkim.NewCreateImageReqBuilder().
@@ -90,7 +80,7 @@ func syncUploadImage(ctx context.Context, url string) string {
 		time.Sleep(time.Duration(i+1) * 3 * time.Second)
 	}
 
-	if err != nil || (resp != nil && !resp.Success()) {
+	if err != nil || resp == nil || !resp.Success() {
 		return ""
 	}
 
@@ -111,9 +101,7 @@ func syncUploadImage(ctx context.Context, url string) string {
 	return imgKey
 }
 
-// 移除旧的 refreshImageCache 函数，逻辑已迁移到 worker.go 的 imageRefreshWorker
-
-// SendToChat 发送消息到指定群组，返回消息ID
+// SendToChat 发送消息到指定群组，返回消息 ID
 func SendToChat(chatID string, card *Card) (string, error) {
 	if chatID == "" {
 		chatID = C.Feishu.ChatID
@@ -121,17 +109,16 @@ func SendToChat(chatID string, card *Card) (string, error) {
 	if chatID == "" {
 		return "", fmt.Errorf("target chat ID (CHAT_ID) not specified")
 	}
-
 	return sendMessage(chatID, "", card)
 }
 
-// UpdateMessage 更新已发送的消息
+// UpdateMessage 更新已发送的消息卡片
 func UpdateMessage(messageID string, card *Card) error {
 	client := GetLarkClient()
-
-	var resp *larkim.PatchMessageResp
-	var err error
-
+	var (
+		resp *larkim.PatchMessageResp
+		err  error
+	)
 	for i := 0; i < 3; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		resp, err = client.Im.Message.Patch(ctx, larkim.NewPatchMessageReqBuilder().
@@ -141,23 +128,21 @@ func UpdateMessage(messageID string, card *Card) error {
 				Build()).
 			Build())
 		cancel()
-
 		if err == nil && resp.Success() {
 			return nil
 		}
 		time.Sleep(time.Duration(i+1) * 2 * time.Second)
 	}
-
 	if err != nil {
 		return err
 	}
 	if !resp.Success() {
-		return fmt.Errorf("failed to update message %d: %s", resp.Code, resp.Msg)
+		return fmt.Errorf("update message failed code=%d msg=%s", resp.Code, resp.Msg)
 	}
 	return nil
 }
 
-// ReplyToMessage 回复指定消息
+// ReplyToMessage 以话题方式回复指定消息
 func ReplyToMessage(parentID string, card *Card) (string, error) {
 	return sendMessage("", parentID, card)
 }
@@ -166,8 +151,10 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 	client := GetLarkClient()
 
 	if parentID != "" {
-		var resp *larkim.ReplyMessageResp
-		var err error
+		var (
+			resp *larkim.ReplyMessageResp
+			err  error
+		)
 		for i := 0; i < 3; i++ {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			resp, err = client.Im.Message.Reply(ctx, larkim.NewReplyMessageReqBuilder().
@@ -175,10 +162,10 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 				Body(larkim.NewReplyMessageReqBodyBuilder().
 					MsgType(larkim.MsgTypeInteractive).
 					Content(card.String()).
+					ReplyInThread(true).
 					Build()).
 				Build())
 			cancel()
-
 			if err == nil && resp.Success() {
 				return *resp.Data.MessageId, nil
 			}
@@ -187,10 +174,7 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if !resp.Success() {
-			return "", fmt.Errorf("failed to reply to message %d: %s", resp.Code, resp.Msg)
-		}
-		return *resp.Data.MessageId, nil
+		return "", fmt.Errorf("reply message failed code=%d msg=%s", resp.Code, resp.Msg)
 	}
 
 	if chatID == "" {
@@ -200,8 +184,10 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 		return "", fmt.Errorf("target chat ID (CHAT_ID) not specified")
 	}
 
-	var resp *larkim.CreateMessageResp
-	var err error
+	var (
+		resp *larkim.CreateMessageResp
+		err  error
+	)
 	for i := 0; i < 3; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		resp, err = client.Im.Message.Create(ctx, larkim.NewCreateMessageReqBuilder().
@@ -213,23 +199,21 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 				Build()).
 			Build())
 		cancel()
-
 		if err == nil && resp.Success() {
 			return *resp.Data.MessageId, nil
 		}
 		time.Sleep(time.Duration(i+1) * 2 * time.Second)
 	}
-
 	if err != nil {
 		return "", err
 	}
 	if !resp.Success() {
-		return "", fmt.Errorf("failed to send message %d: %s", resp.Code, resp.Msg)
+		return "", fmt.Errorf("send message failed code=%d msg=%s", resp.Code, resp.Msg)
 	}
 	return *resp.Data.MessageId, nil
 }
 
-// SendCard 发送飞书消息卡片 (保留兼容 Webhook)
+// SendCard 通过 Webhook 发送卡片（兜底兼容模式）
 func SendCard(card *Card) error {
 	if C.Feishu.Webhook == "" {
 		_, err := SendToChat("", card)
@@ -241,12 +225,12 @@ func SendCard(card *Card) error {
 		return err
 	}
 
-	var resp struct {
+	var result struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 	}
 
-	res, err := http.R().
+	res, err := httpClient.R().
 		SetHeader("Content-Type", "application/json").
 		SetBody(map[string]any{
 			"msg_type":  "interactive",
@@ -254,7 +238,7 @@ func SendCard(card *Card) error {
 			"timestamp": fmt.Sprint(ts),
 			"sign":      sign,
 		}).
-		SetResult(&resp).
+		SetResult(&result).
 		Post(C.Feishu.Webhook)
 
 	if err != nil {
@@ -263,8 +247,8 @@ func SendCard(card *Card) error {
 	if res.StatusCode() > 299 {
 		return fmt.Errorf("HTTP %d: %s", res.StatusCode(), res.String())
 	}
-	if resp.Code != 0 {
-		return fmt.Errorf("Feishu error %d: %s", resp.Code, resp.Msg)
+	if result.Code != 0 {
+		return fmt.Errorf("feishu error code=%d msg=%s", result.Code, result.Msg)
 	}
 	return nil
 }
@@ -278,215 +262,266 @@ func genSign(secret string, ts int64) (string, error) {
 	return base64.StdEncoding.EncodeToString(h.Sum(nil)), nil
 }
 
-// Card 飞书消息卡片模型 (V2)
+// ---------------------------------------------------------------------------
+// Card V2 数据结构
+// 参考: https://open.feishu.cn/document/feishu-cards/card-json-v2-structure
+// ---------------------------------------------------------------------------
+
+// Card 飞书消息卡片顶层结构 (schema 2.0)
 type Card struct {
 	Schema string      `json:"schema"`
+	Config *CardConfig `json:"config,omitempty"`
 	Header *CardHeader `json:"header,omitempty"`
 	Body   *CardBody   `json:"body,omitempty"`
-	Config *CardConfig `json:"config,omitempty"`
 }
 
-// CardBody 消息卡片正文
+// CardConfig 卡片全局配置
+// V2 规范字段：enable_forward / update_multi
+type CardConfig struct {
+	// 是否允许转发卡片
+	EnableForward bool `json:"enable_forward"`
+	// 是否允许多端同步更新（替代旧版 wide_screen_mode）
+	UpdateMulti bool `json:"update_multi"`
+}
+
+// CardHeader 卡片标题区
+type CardHeader struct {
+	// title 必须为 plain_text 或 lark_md
+	Title    CardText `json:"title"`
+	// template 控制标题栏背景色: blue/green/red/orange/grey/purple/indigo/wathet/turquoise/yellow/lime/pink/carmine
+	Template string   `json:"template,omitempty"`
+	// subtitle 副标题（可选）
+	Subtitle *CardText `json:"subtitle,omitempty"`
+}
+
+// CardBody 卡片正文
 type CardBody struct {
 	Elements []any `json:"elements"`
 }
 
-// NewCard 创建一个新的消息卡片
+// CardText 通用文本对象
+// tag 可为 plain_text 或 lark_md
+type CardText struct {
+	Tag     string `json:"tag"`
+	Content string `json:"content"`
+}
+
+// NewCard 创建符合 V2 规范的新卡片
 func NewCard() *Card {
 	return &Card{
 		Schema: "2.0",
+		Config: &CardConfig{
+			EnableForward: true,
+			UpdateMulti:   true,
+		},
 		Header: &CardHeader{},
 		Body:   &CardBody{Elements: []any{}},
-		Config: &CardConfig{
-			WideScreenMode: true,
-			EnableForward:  true,
-		},
 	}
 }
 
-// String 将卡片序列化为 JSON 字符串
+// String 将卡片序列化为 JSON 字符串（供飞书 API content 字段使用）
 func (c *Card) String() string {
 	b, _ := json.Marshal(c)
 	return string(b)
 }
 
-// CardConfig 消息卡片配置
-type CardConfig struct {
-	WideScreenMode bool `json:"wide_screen_mode"`
-	EnableForward  bool `json:"enable_forward"`
-}
+// ---------------------------------------------------------------------------
+// 卡片 Body 元素构造方法
+// ---------------------------------------------------------------------------
 
 // AddDivider 添加分割线
 func (c *Card) AddDivider() {
 	c.Body.Elements = append(c.Body.Elements, map[string]string{"tag": "hr"})
 }
 
-// AddMarkdown 添加 Markdown 元素
+// AddMarkdown 添加 lark_md Markdown 块
 func (c *Card) AddMarkdown(content string) {
-	c.Body.Elements = append(c.Body.Elements, CardElement{
-		Tag:     "markdown",
-		Content: content,
+	c.Body.Elements = append(c.Body.Elements, map[string]any{
+		"tag":     "markdown",
+		"content": content,
 	})
 }
 
 // AddCollapsiblePanel 添加折叠面板
-func (c *Card) AddCollapsiblePanel(content string) {
-	// 飞书 Schema 2.0 支持 collapsible_panel
+// V2 规范：header.title 必须为 lark_md；expanded 控制默认展开状态
+func (c *Card) AddCollapsiblePanel(title, content string) {
+	if title == "" {
+		title = "📝 展开查看完整内容"
+	}
 	c.Body.Elements = append(c.Body.Elements, map[string]any{
-		"tag": "collapsible_panel",
+		"tag":      "collapsible_panel",
+		"expanded": false,
 		"header": map[string]any{
 			"title": map[string]string{
-				"tag": "plain_text",
-				"content": "📝 Expand to view full content",
+				"tag":     "lark_md",
+				"content": title,
 			},
+			"padding": "4px 0px",
 		},
 		"elements": []any{
-			map[string]string{
-				"tag": "markdown",
+			map[string]any{
+				"tag":     "markdown",
 				"content": content,
 			},
+		},
+		"border": map[string]any{
+			"color":        "grey",
+			"corner_radius": "4px",
 		},
 	})
 }
 
-// AddDiv 添加普通文本块 (支持多列字段)
-func (c *Card) AddDiv(content string, fields []CardField) {
-	el := CardElement{
-		Tag: "div",
+// AddActions 添加操作按钮容器（V2 规范：按钮必须放在 actions 容器内）
+// layout 可为 "bisected"、"trisection"、"flow"（默认 flow）
+func (c *Card) AddActions(layout string, buttons ...ActionButton) {
+	if len(buttons) == 0 {
+		return
 	}
-	if content != "" {
-		el.Text = &Text{Tag: "lark_md", Content: content}
+	if layout == "" {
+		layout = "flow"
 	}
-	if len(fields) > 0 {
-		el.Fields = fields
-	}
-	c.Body.Elements = append(c.Body.Elements, el)
-}
-
-// AddAction 添加操作按钮
-func (c *Card) AddAction(btn Button) {
-	btn.Tag = "button"
-	c.Body.Elements = append(c.Body.Elements, btn)
-}
-
-// AddNote 添加备注信息
-func (c *Card) AddNote(elements ...any) {
-	var markdowns []string
-	for _, el := range elements {
-		b, _ := json.Marshal(el)
-		var m map[string]any
-		json.Unmarshal(b, &m)
-		if tag, _ := m["tag"].(string); tag == "lark_md" || tag == "plain_text" {
-			if content, ok := m["content"].(string); ok {
-				markdowns = append(markdowns, content)
-			}
+	actions := make([]any, 0, len(buttons))
+	for _, b := range buttons {
+		btn := map[string]any{
+			"tag":  "button",
+			"text": map[string]string{"tag": "plain_text", "content": b.Text},
+			"type": b.Type,
 		}
+		if b.URL != "" {
+			btn["url"] = b.URL
+		}
+		if b.Disabled {
+			btn["disabled"] = true
+		}
+		actions = append(actions, btn)
 	}
-	if len(markdowns) > 0 {
-		c.AddMarkdown(fmt.Sprintf("%s", strings.Join(markdowns, " | ")))
-	}
+	c.Body.Elements = append(c.Body.Elements, map[string]any{
+		"tag":     "action",
+		"layout":  layout,
+		"actions": actions,
+	})
 }
 
-// AddNoteText 添加纯文本备注
+// ActionButton 按钮描述
+type ActionButton struct {
+	Text     string
+	URL      string
+	// Type: primary / danger / default
+	Type     string
+	Disabled bool
+}
+
+// AddNote 添加备注（V2 规范：note 组件，elements 内可含 img / plain_text / lark_md）
+func (c *Card) AddNote(elements ...any) {
+	if len(elements) == 0 {
+		return
+	}
+	c.Body.Elements = append(c.Body.Elements, map[string]any{
+		"tag":      "note",
+		"elements": elements,
+	})
+}
+
+// AddNoteText 添加纯文本备注（快捷方法）
 func (c *Card) AddNoteText(content string) {
-	c.AddNote(map[string]string{
+	c.AddNote(map[string]any{
 		"tag":     "lark_md",
 		"content": content,
 	})
 }
 
-// AddColumnSet 添加分栏布局
-func (c *Card) AddColumnSet(columns ...any) {
+// AddColumnSet 添加分栏布局容器
+// flexMode: none / stretch / flow / bisect / trisect
+func (c *Card) AddColumnSet(flexMode string, horizontalSpacing string, columns ...any) {
+	if flexMode == "" {
+		flexMode = "none"
+	}
+	if horizontalSpacing == "" {
+		horizontalSpacing = "small"
+	}
 	c.Body.Elements = append(c.Body.Elements, map[string]any{
-		"tag":       "column_set",
-		"flex_mode": "bisect",
-		"columns":   columns,
+		"tag":                "column_set",
+		"flex_mode":          flexMode,
+		"horizontal_spacing": horizontalSpacing,
+		"columns":            columns,
 	})
 }
 
-// NewColumn 创建一个新的分栏
-func NewColumn(width string, elements ...any) map[string]any {
-	return map[string]any{
+// NewColumn 创建分栏列
+// width: "auto" | "weighted" | 像素值字符串
+func NewColumn(width string, weight int, verticalAlign string, elements ...any) map[string]any {
+	col := map[string]any{
 		"tag":      "column",
 		"width":    width,
 		"elements": elements,
 	}
+	if weight > 0 {
+		col["weight"] = weight
+	}
+	if verticalAlign != "" {
+		col["vertical_align"] = verticalAlign
+	}
+	return col
 }
 
-// NewTag 创建一个标签
-func NewTag(text string, color string) map[string]any {
-	return map[string]any{
-		"tag": "tag",
-		"text": map[string]string{
+// NewImageElement 创建图片元素（用于列、备注等容器内）
+// mode: crop_center / fit_horizontal / stretch / large / medium / small / tiny
+func NewImageElement(imgKey string, altText string, customWidth int, mode string) map[string]any {
+	el := map[string]any{
+		"tag":     "img",
+		"img_key": imgKey,
+		"alt": map[string]string{
 			"tag":     "plain_text",
-			"content": text,
+			"content": altText,
 		},
-		"color": color,
+		"mode": mode,
 	}
+	if customWidth > 0 {
+		el["custom_width"] = customWidth
+	}
+	return el
 }
 
-// NewRichText 创建富文本块
-func NewRichText(content ...any) map[string]any {
+// NewMarkdownElement 创建 Markdown 内联元素（用于列等容器内）
+func NewMarkdownElement(content string) map[string]any {
 	return map[string]any{
-		"tag": "div",
-		"text": map[string]any{
-			"tag":     "rich_text",
-			"content": content,
-		},
-	}
-}
-
-// NewTextElement 创建文本元素
-func NewTextElement(content string, isLink bool, url string) map[string]any {
-	if isLink {
-		return map[string]any{
-			"tag":     "a",
-			"text":    map[string]string{"tag": "plain_text", "content": content},
-			"href":    url,
-		}
-	}
-	return map[string]any{
-		"tag":     "text",
+		"tag":     "markdown",
 		"content": content,
 	}
 }
 
-// CardHeader 卡片标题部分
-type CardHeader struct {
-	Title    Text   `json:"title"`
-	Template string `json:"template,omitempty"`
+// AddImage 在卡片正文中添加图片块
+func (c *Card) AddImage(imgKey, altText string, mode string) {
+	el := map[string]any{
+		"tag":     "img",
+		"img_key": imgKey,
+		"alt": map[string]string{
+			"tag":     "plain_text",
+			"content": altText,
+		},
+		"mode": mode,
+	}
+	c.Body.Elements = append(c.Body.Elements, el)
 }
 
-// Text 文本对象
-type Text struct {
-	Tag     string `json:"tag"`
-	Content string `json:"content"`
-}
+// ---------------------------------------------------------------------------
+// 废弃兼容层（避免其他文件编译报错，后续可删除）
+// ---------------------------------------------------------------------------
 
-// CardField 卡片字段部分
+// CardField 卡片字段（旧版 div fields，V2 已改用 column_set）
 type CardField struct {
-	IsShort bool  `json:"is_short"`
-	Text    *Text `json:"text"`
+	IsShort bool      `json:"is_short"`
+	Text    *CardText `json:"text"`
 }
 
-// CardElement 卡片元素基础结构
+// CardElement 旧版通用元素（兼容保留）
 type CardElement struct {
 	Tag     string      `json:"tag"`
 	Content string      `json:"content,omitempty"`
-	Text    *Text       `json:"text,omitempty"`
+	Text    *CardText   `json:"text,omitempty"`
 	Fields  []CardField `json:"fields,omitempty"`
 }
 
-// CardAction 卡片交互操作部分
-type CardAction struct {
-	Tag     string   `json:"tag"`
-	Actions []Button `json:"actions"`
-}
+// Text 兼容旧版 Text 类型（与 CardText 等价）
+type Text = CardText
 
-// Button 按钮组件
-type Button struct {
-	Tag  string `json:"tag"`
-	Text Text   `json:"text"`
-	Url  string `json:"url,omitempty"`
-	Type string `json:"type,omitempty"`
-}

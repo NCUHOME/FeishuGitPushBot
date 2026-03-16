@@ -20,8 +20,8 @@ type Config struct {
 		ChatID    string `koanf:"chat_id"`
 	} `koanf:"feishu"`
 	Github struct {
-		Key         string `koanf:"github_key"`
-		IgnoreUsers string `koanf:"ignore_users"`
+		Key      string `koanf:"github_key"`
+		BotUsers string `koanf:"bot_users"`
 	} `koanf:"github"`
 	Database struct {
 		URL string `koanf:"url"`
@@ -48,8 +48,8 @@ func LoadConfig() {
 		if s == "github_key" {
 			return "github.github_key"
 		}
-		if s == "github_ignore_users" {
-			return "github.ignore_users"
+		if s == "github_bot_users" {
+			return "github.bot_users"
 		}
 		if s == "database_url" {
 			return "database.url"

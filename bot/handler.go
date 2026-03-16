@@ -23,22 +23,7 @@ func GithubHandler(c *gin.Context) {
 
 	eventType := github.WebHookType(c.Request)
 	
-	// 检查是否忽略该用户
-	if C.Github.IgnoreUsers != "" {
-		var m map[string]any
-		_ = json.Unmarshal(payload, &m)
-		sender := ext(m, "sender", "login")
-		if sender != "" {
-			ignoredUsers := strings.Split(C.Github.IgnoreUsers, ",")
-			for _, u := range ignoredUsers {
-				if strings.TrimSpace(u) == sender {
-					slog.Info("Event ignored: sender in ignore list", "sender", sender, "event", eventType)
-					c.JSON(200, gin.H{"code": 0, "msg": "ignored user"})
-					return
-				}
-			}
-		}
-	}
+
 
 	event, err := github.ParseWebHook(eventType, payload)
 	if err != nil {
@@ -79,7 +64,11 @@ func GithubHandler(c *gin.Context) {
 	senderUrl := ext(m, "sender", "html_url")
 	avatarUrl := ext(m, "sender", "avatar_url")
 	card := BuildCard(c.Request.Context(), repo, repoUrl, sender, senderUrl, avatarUrl, detail)
-	_, _ = SendToChat("", card)
+	if _, err := SendToChat("", card); err != nil {
+		slog.Error("Fallback send failed", "repo", repo, "event", eventType, "error", err)
+		c.AbortWithStatusJSON(500, gin.H{"code": 3, "msg": "failed to send message"})
+		return
+	}
 
 	c.JSON(200, gin.H{"code": 0, "msg": "ok"})
 }
