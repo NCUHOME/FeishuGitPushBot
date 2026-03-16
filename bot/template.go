@@ -475,11 +475,6 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 	card.Header.Title = Text{Tag: "plain_text", Content: detail.Title}
 	card.Header.Template = GetTemplate(detail.Title)
 
-	// --- 0. 回复上下文 (如果存在) ---
-	if detail.ReplyToTitle != "" && detail.Action != "edited" {
-		card.AddNoteText(fmt.Sprintf("| Reply to %s", detail.ReplyToTitle))
-		card.AddDivider()
-	}
 
 	// --- 1. 摘要信息 (仓库 / 分支 / [头像] 提交人) ---
 	repoPart := ""
