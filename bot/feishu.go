@@ -54,19 +54,41 @@ func GetImageKey(ctx context.Context, url string) string {
 
 // syncUploadImage 同步下载并上传图片到飞书，返回 img_key
 func syncUploadImage(ctx context.Context, url string) string {
+	// 1. 下载图片 (使用传入的 ctx，受限时控制)
 	imageRes, err := httpClient.R().SetContext(ctx).Get(url)
 	if err != nil || imageRes.IsError() {
 		return ""
 	}
 	defer imageRes.Body.Close()
 	imgData, _ := io.ReadAll(imageRes.Body)
-	hash := fmt.Sprintf("%x", md5.Sum(imgData))
+	if len(imgData) == 0 {
+		return ""
+	}
+	newHash := fmt.Sprintf("%x", md5.Sum(imgData))
+
+	// 2. 核心优化：检查缓存，如果内容没变（Hash 一致），则不重复上传飞书
+	if DB != nil {
+		var oldCache ImageCache
+		if err := DB.NewSelect().Model(&oldCache).Where("url = ?", url).Scan(ctx); err == nil {
+			if oldCache.Hash == newHash && oldCache.ImgKey != "" {
+				// 内容未变，直接更新时间并返回旧 Key
+				_, _ = DB.NewUpdate().Model(&oldCache).
+					Set("updated_at = ?", time.Now()).
+					WherePK().Exec(context.Background())
+				return oldCache.ImgKey
+			}
+		}
+	}
 
 	client := GetLarkClient()
 	var resp *larkim.CreateImageResp
 
+	// 3. 上传图片到飞书 (仅在内容有变化或无缓存时执行)
 	for i := 0; i < 3; i++ {
-		uploadCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		if ctx.Err() != nil {
+			return ""
+		}
+		uploadCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		resp, err = client.Im.Image.Create(uploadCtx, larkim.NewCreateImageReqBuilder().
 			Body(larkim.NewCreateImageReqBodyBuilder().
 				ImageType(larkim.ImageTypeMessage).
@@ -74,10 +96,15 @@ func syncUploadImage(ctx context.Context, url string) string {
 				Build()).
 			Build())
 		cancel()
+
 		if err == nil && resp.Success() {
 			break
 		}
-		time.Sleep(time.Duration(i+1) * 3 * time.Second)
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(time.Duration(i+1) * 1 * time.Second):
+		}
 	}
 
 	if err != nil || resp == nil || !resp.Success() {
@@ -89,7 +116,7 @@ func syncUploadImage(ctx context.Context, url string) string {
 		cache := ImageCache{
 			URL:       url,
 			ImgKey:    imgKey,
-			Hash:      hash,
+			Hash:      newHash,
 			UpdatedAt: time.Now(),
 		}
 		_, _ = DB.NewInsert().Model(&cache).On("CONFLICT (url) DO UPDATE").

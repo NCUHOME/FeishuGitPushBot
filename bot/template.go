@@ -80,9 +80,13 @@ func ParseEvent(event any, eventType string) EventDetail {
 				}
 				// 检查 Co-authored-by
 				for _, coAuthor := range parseCoAuthors(c.GetMessage()) {
-					authors[coAuthor.Login] = true
-					if coAuthor.Login != "" {
-						avatarMap[coAuthor.Login] = fmt.Sprintf("https://github.com/%s.png", coAuthor.Login)
+					if coAuthor.Avatar != "" {
+						key := coAuthor.Login
+						if key == "" {
+							key = coAuthor.Name
+						}
+						authors[key] = true
+						avatarMap[key] = coAuthor.Avatar
 					}
 				}
 			}
@@ -101,8 +105,8 @@ func ParseEvent(event any, eventType string) EventDetail {
 					emojiIcon = "🔹"
 				}
 
-				msg := ProcessCommitMessage(c.GetMessage())
-				msg = SafeText(msg, 400)
+				msg := SafeText(c.GetMessage(), 400)
+				msg = ProcessCommitMessage(msg)
 
 				shortSHA := ""
 				if sha := c.GetID(); sha != "" {
@@ -502,22 +506,28 @@ const (
 	cardColorPurple cardColor = "purple"
 )
 
-// GetTemplate 根据标题中的 emoji 返回对应的飞书卡片标题色
+// GetTemplate 根据标题中的 emoji 或关键字返回对应的飞书卡片标题色
 // 支持颜色: blue / green / red / orange / grey / purple / indigo / wathet / turquoise / yellow / lime / pink / carmine
 func GetTemplate(title string) string {
-	if ContainsAny(title, "❌", "💥", "💔") {
+	if ContainsAny(title, "❌", "💥", "💔", "failed", "Failure", "Failed") {
 		return string(cardColorRed)
 	}
-	if ContainsAny(title, "✅") {
+	if ContainsAny(title, "✅", "succeeded", "Success", "Succeeded") {
 		return string(cardColorGreen)
 	}
-	if ContainsAny(title, "⏳", "🏃") {
+	if ContainsAny(title, "⏳", "🏃", "running", "Started", "Running") {
 		return string(cardColorOrange)
 	}
-	if ContainsAny(title, "💜") {
+	if ContainsAny(title, "🏷️", "Tag", "New Tag") {
 		return string(cardColorPurple)
 	}
-	if ContainsAny(title, "🗑️") {
+	if ContainsAny(title, "🆕", "New Branch", "New Commits", "commits") {
+		return "wathet"
+	}
+	if ContainsAny(title, "🥕", "PullRequest", "PR") {
+		return "indigo"
+	}
+	if ContainsAny(title, "🗑️", "Deleted") {
 		return string(cardColorGrey)
 	}
 	return string(cardColorBlue)
@@ -725,7 +735,7 @@ func ProcessCommitMessage(msg string) string {
 	// 1. 转换 Emoji 短代码
 	msg = emoji.Sprint(msg)
 
-	// 2. 高亮 Conventional Commit 并处理换行
+	// 2. 高亮 Conventional Commit 并处理格式
 	matches := conventionalRegex.FindAllStringIndex(msg, -1)
 	if len(matches) == 0 {
 		return msg
@@ -733,30 +743,25 @@ func ProcessCommitMessage(msg string) string {
 
 	var result strings.Builder
 	last := 0
-	for i, match := range matches {
+	for _, match := range matches {
 		start, end := match[0], match[1]
 
-		// 处理当前匹配之前的内容
+		// 写入上一个匹配到当前匹配之间的内容
 		if start > last {
 			part := msg[last:start]
-			// 如果这个匹配不是在行首（即前面有非换行内容），且前面有内容，则注入换行实现“正确换行”
-			if i > 0 && !strings.HasSuffix(result.String(), "\n") && strings.TrimSpace(part) != "" {
-				result.WriteString(strings.TrimRight(part, " "))
-				result.WriteString("\n")
-			} else {
-				result.WriteString(part)
-			}
-		} else if i > 0 {
-			// 如果紧挨着上一个匹配，直接加换行
-			if !strings.HasSuffix(result.String(), "\n") {
-				result.WriteString("\n")
-			}
+			result.WriteString(part)
 		}
 
 		// 加粗匹配的前缀
 		result.WriteString("**")
 		result.WriteString(msg[start:end])
 		result.WriteString("**")
+
+		// 确保 prefix 后面有一个空格（解决 feat:xxxx 无法高亮的问题）
+		if end < len(msg) && msg[end] != ' ' && msg[end] != '\n' && msg[end] != '\t' {
+			result.WriteString(" ")
+		}
+
 		last = end
 	}
 	result.WriteString(msg[last:])
@@ -864,11 +869,12 @@ func GetDiffOnlyAdded(old, new string) string {
 	return strings.Join(diff, "\n")
 }
 
-var coAuthorRegex = regexp.MustCompile(`(?im)^Co-authored-by:\s*(.+?)\s*<(.+?)>`)
+var coAuthorRegex = regexp.MustCompile(`(?im)^Co-authored-by:\s*(.+?)\s*[<＜](.+?)[>＞]`)
 
 type AuthorInfo struct {
-	Name  string
-	Login string
+	Name   string
+	Login  string
+	Avatar string
 }
 
 // parseCoAuthors 解析提交信息中的共同作者
@@ -880,19 +886,37 @@ func parseCoAuthors(msg string) []AuthorInfo {
 			name := strings.TrimSpace(m[1])
 			email := strings.TrimSpace(m[2])
 			login := ""
-			// 尝试从邮箱提取用户名 (如果是 GitHub 自动生成的 noreply 邮箱)
-			if strings.Contains(email, "@users.noreply.github.com") {
+			// 1. 尝试从 GitHub noreply 邮箱提取 login
+			if strings.HasSuffix(email, "@users.noreply.github.com") {
 				parts := strings.Split(email, "@")
 				if len(parts) > 0 {
 					loginParts := strings.Split(parts[0], "+")
 					login = loginParts[len(loginParts)-1]
 				}
 			}
-			// 如果提取不到，且名字不含空格，尝试把名字当作 login
+			// 2. 如果提取不到，且名字不含空格，尝试把名字当作 login
 			if login == "" && !strings.Contains(name, " ") {
 				login = name
 			}
-			authors = append(authors, AuthorInfo{Name: name, Login: login})
+
+			// 3. 针对已知的 AI service 或 Bot 的猜测 (仅限 GitHub 官方路径成果)
+			if login == "" {
+				if strings.Contains(email, "@anthropic.com") {
+					login = "Claude"
+				} else if strings.Contains(email, "@openai.com") {
+					login = "ChatGPT"
+				} else if strings.Contains(email, "bot") || strings.Contains(name, "Bot") {
+					login = "bot"
+				}
+			}
+
+			// 4. 统一使用 GitHub 提供的头像
+			avatar := ""
+			if login != "" {
+				avatar = fmt.Sprintf("https://github.com/%s.png", login)
+			}
+
+			authors = append(authors, AuthorInfo{Name: name, Login: login, Avatar: avatar})
 		}
 	}
 	return authors

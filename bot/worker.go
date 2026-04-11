@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/go-github/v84/github"
 	"strings"
+	"sync"
 )
 
 // StartWorker 启动消息队列处理工作者和图片刷新任务
@@ -240,26 +241,40 @@ func processWebhookEvent(event WebhookEvent) error {
 	}
 
 	// 6. 发送新消息
-	// 检查所有需要显示的头像缓存状态，有任意一个未缓存或过期就标记 pending
+	// 检查所有需要显示的头像缓存状态，有任意一个未缓存就尝试立即同步上传（限时 5s）
 	allAvatars := detail.AuthorAvatars
 	if len(allAvatars) == 0 && avatarUrl != "" {
 		allAvatars = []string{avatarUrl}
 	}
+
+	// 并行补齐缺失的头像缓存，避免串行等待导致超时
+	var wg sync.WaitGroup
+	uploadCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	for _, url := range allAvatars {
+		if GetImageKey(ctx, url) == "" {
+			wg.Add(1)
+			go func(u string) {
+				defer wg.Done()
+				syncUploadImage(uploadCtx, u)
+			}(url)
+		}
+	}
+	wg.Wait()
+	cancel()
+
 	imageStatus := "done"
 	for _, url := range allAvatars {
 		var cache ImageCache
 		if err := DB.NewSelect().Model(&cache).Where("url = ?", url).Scan(ctx); err == nil {
 			if time.Since(cache.UpdatedAt) > 24*time.Hour {
 				imageStatus = "pending"
-				break
 			}
 		} else {
 			imageStatus = "pending"
-			break
 		}
 	}
 
-	// 此时 BuildCard 调用 GetImageKey 是纯内存/DB查询，不会阻塞
+	// 此时 BuildCard 调用 GetImageKey 是纯内存/DB查询，刚才同步上传成功的会立即显示
 	card := BuildCard(ctx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
 	
 	var msgID string
@@ -297,6 +312,7 @@ func processWebhookEvent(event WebhookEvent) error {
 			Ref:             ref,
 			EventType:       event.EventType,
 			Content:         string(detailJson),
+			CardString:      card.String(),
 			ImageStatus:     imageStatus,
 			AvatarURL:       avatarUrl,
 			EventID:         event.ID,
@@ -313,18 +329,25 @@ func imageRefreshWorker() {
 		err := DB.NewSelect().Model(&records).
 			Where("image_status = ?", "pending").
 			Order("id ASC").
-			Limit(10).
+			Limit(20).
 			Scan(context.Background())
 
 		if err != nil || len(records) == 0 {
-			time.Sleep(15 * time.Second)
+			time.Sleep(5 * time.Second)
 			continue
 		}
 
+		var wg sync.WaitGroup
 		for _, record := range records {
-			refreshOneImage(record)
-			time.Sleep(2 * time.Second)
+			wg.Add(1)
+			go func(r MessageRecord) {
+				defer wg.Done()
+				refreshOneImage(r)
+			}(record)
+			// 微小的启动间隔，避免瞬时并发压力过大
+			time.Sleep(100 * time.Millisecond)
 		}
+		wg.Wait()
 	}
 }
 
@@ -388,20 +411,32 @@ func refreshOneImage(record MessageRecord) {
 	sender := ext(m, "sender", "login")
 	senderUrl := ext(m, "sender", "html_url")
 
-	// 4. 重建卡片，此时所有头像的 img_key 均已缓存
+	// 4. 重建卡片，此时所有头像的 img_key 均已缓存（哪怕是刚才刚同步成功的）
 	buildCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	card := BuildCard(buildCtx, record.RepoName, repoUrl, sender, senderUrl, record.AvatarURL, detail)
+	newCard := BuildCard(buildCtx, record.RepoName, repoUrl, sender, senderUrl, record.AvatarURL, detail)
 
-	// 5. 更新飞书消息卡片
-	if err = UpdateMessage(record.FeishuMessageID, card); err != nil {
+	// 5. 核心优化：如果卡片内容（JSON）完全没变，则无需调用飞书 API 更新
+	if newCard.String() == record.CardString {
+		// 标记完成即可
+		_, _ = DB.NewUpdate().Model(&record).Set("image_status = ?", "done").WherePK().Exec(context.Background())
+		slog.Debug("Image refresh: card unchanged, skipping update", "message_id", record.FeishuMessageID)
+		return
+	}
+
+	// 6. 更新飞书消息卡片
+	if err = UpdateMessage(record.FeishuMessageID, newCard); err != nil {
 		slog.Error("Image refresh: failed to update message card",
 			"message_id", record.FeishuMessageID, "error", err)
 		return
 	}
 
-	// 6. 标记完成
-	_, _ = DB.NewUpdate().Model(&record).Set("image_status = ?", "done").WherePK().Exec(context.Background())
-	slog.Info("Image refresh successful, all avatars updated",
+	// 7. 标记完成并记录新的卡片内容，防止重复刷新
+	record.CardString = newCard.String()
+	_, _ = DB.NewUpdate().Model(&record).
+		Set("image_status = ?", "done").
+		Set("card_string = ?", record.CardString).
+		WherePK().Exec(context.Background())
+	slog.Info("Image refresh successful, avatars updated",
 		"message_id", record.FeishuMessageID, "avatar_count", len(allAvatars))
 }

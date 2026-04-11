@@ -25,6 +25,7 @@ type MessageRecord struct {
 	Ref             string    `bun:""`
 	EventType       string    `bun:",notnull"`
 	Content         string    `bun:"type:text"` // 存储卡片详情的 JSON
+	CardString      string    `bun:"type:text"` // 存储卡片内容的字符串表示，用于去重
 	CreatedAt       time.Time `bun:",nullzero,notnull,default:current_timestamp"`
 	UpdatedAt       time.Time `bun:",nullzero,notnull,default:current_timestamp"`
 	DeletedAt       time.Time `bun:",soft_delete,nullzero"`
@@ -35,6 +36,7 @@ type MessageRecord struct {
 	// 新增：图片状态，用于后台刷新
 	ImageStatus     string    `bun:",default:'done'"` // done, pending
 	AvatarURL       string    `bun:""`                // 原始头像 URL
+	CardString      string    `bun:"type:text"`       // 保存卡片全文用于对比
 }
 
 // WebhookEvent 存储所有来自 GitHub 的原始请求，持久化保存

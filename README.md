@@ -25,7 +25,7 @@
 | `FEISHU_WEBHOOK` | 飞书自定义机器人 Webhook 地址 | `https://open.feishu.cn/open-apis/bot/v2/hook/...` |
 | `FEISHU_SECRET` | 飞书机器人安全校验密钥 | `your_feishu_secret` |
 | `GITHUB_KEY` | GitHub Webhook Secret | `your_github_secret` |
-| `GITHUB_IGNORE_USERS` | (可选) 忽略推送的用户列表，逗号分隔 | `bot-user,silent-dev` |
+| `GITHUB_BOT_USERS` | (可选) 忽略推送的用户列表，逗号分隔 | `bot-user,silent-dev` |
 | `FEISHU_APP_ID` | (可选) 飞书应用 App ID | `cli_xxx` |
 | `FEISHU_APP_SECRET` | (可选) 飞书应用 App Secret | `xxx` |
 | `DATABASE_URL` | (可选) 数据库连接串 | `sqlite://feishu.db` |
