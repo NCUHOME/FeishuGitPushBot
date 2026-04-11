@@ -105,7 +105,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 					emojiIcon = "🔹"
 				}
 
-				msg := SafeText(c.GetMessage(), 400)
+				msg := SafeText(c.GetMessage(), 5000)
 				msg = ProcessCommitMessage(msg, repoUrl)
 
 				shortSHA := ""
@@ -212,7 +212,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		} else {
 			text, foldable := ProcessGithubMarkdown(pr.GetBody())
 			// 如果内容过长 (比如超过 800 字)，则放入 ExtraReply
-			if len(text) > 800 {
+			if len(text) > 30000 {
 				d.Text = fmt.Sprintf("**%s**\n*(Content too long, see reply)*", pr.GetTitle())
 				d.ExtraReply = text
 			} else if text != "" {
@@ -242,7 +242,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		default:
 			d.Title = fmt.Sprintf("🍄 Issue %s", action)
 		}
-		body := SafeText(strings.TrimSpace(iss.GetBody()), 1500)
+		body := SafeText(strings.TrimSpace(iss.GetBody()), 50000)
 		if body != "" {
 			d.Text = fmt.Sprintf("**%s**\n%s", iss.GetTitle(), body)
 		} else {
@@ -262,8 +262,8 @@ func ParseEvent(event any, eventType string) EventDetail {
 			body = GetDiffOnlyAdded(*e.Changes.Body.From, body)
 		}
 
-		commentBody := SafeText(strings.TrimSpace(body), 1500)
-		if len(commentBody) > 1000 {
+		commentBody := SafeText(strings.TrimSpace(body), 50000)
+		if len(commentBody) > 10000 {
 			d.Text = fmt.Sprintf("**%s**\n*(Comment too long, see reply)*", iss.GetTitle())
 			d.ExtraReply = commentBody
 		} else if commentBody != "" {
@@ -284,7 +284,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 			body = GetDiffOnlyAdded(*e.Changes.Body.From, body)
 		}
 
-		commentBody := SafeText(strings.TrimSpace(body), 1500)
+		commentBody := SafeText(strings.TrimSpace(body), 50000)
 		if commentBody != "" {
 			d.Text = fmt.Sprintf("**%s**\n%s", pr.GetTitle(), commentBody)
 		} else {
@@ -300,7 +300,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 		body := e.GetReview().GetBody()
 		// PullRequestReviewEvent 在 go-github 中目前没有 Changes 字段
-		reviewBody := SafeText(strings.TrimSpace(body), 1500)
+		reviewBody := SafeText(strings.TrimSpace(body), 50000)
 		if reviewBody != "" {
 			d.Text = fmt.Sprintf("**%s**\n%s", pr.GetTitle(), reviewBody)
 		} else {
@@ -490,9 +490,21 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 	case *github.OrganizationEvent:
 		d.Title = fmt.Sprintf("🏢 Org %s: %s", e.GetOrganization().GetLogin(), e.GetAction())
-		d.Text = fmt.Sprintf("Action: **%s**\nMember: **%s**", e.GetAction(), e.GetMembership().GetUser().GetLogin())
+		member := e.GetMembership().GetUser()
+		login := member.GetLogin()
+		if login == "****" || login == "" {
+			// 如果是邀请，尝试从其他地方获取信息（如暂时显示为 "New Member"）
+			if login == "" {
+				login = "Someone"
+			}
+		}
+		d.Text = fmt.Sprintf("Action: **%s**\nMember: **%s**", e.GetAction(), login)
 		d.Action = e.GetAction()
 		d.URL = e.GetOrganization().GetHTMLURL()
+		if login != "" && login != "****" {
+			d.AuthorLogins = []string{login}
+			d.AuthorAvatars = []string{member.GetAvatarURL()}
+		}
 
 	case *github.TeamEvent:
 		d.Title = fmt.Sprintf("👥 Team %s: %s", e.GetTeam().GetName(), e.GetAction())
@@ -508,11 +520,15 @@ func ParseEvent(event any, eventType string) EventDetail {
 		d.Text = fmt.Sprintf("Action: **%s**\nMember: **%s**", e.GetAction(), e.GetMember().GetLogin())
 		d.Action = e.GetAction()
 		d.URL = e.GetMember().GetHTMLURL()
+		d.AuthorLogins = []string{e.GetMember().GetLogin()}
+		d.AuthorAvatars = []string{e.GetMember().GetAvatarURL()}
 
 	case *github.MembershipEvent:
 		d.Title = fmt.Sprintf("👥 Membership %s: %s", e.GetMember().GetLogin(), e.GetAction())
 		d.Text = fmt.Sprintf("Action: **%s**\nMember: **%s**\nScope: **%s**", e.GetAction(), e.GetMember().GetLogin(), e.GetScope())
 		d.Action = e.GetAction()
+		d.AuthorLogins = []string{e.GetMember().GetLogin()}
+		d.AuthorAvatars = []string{e.GetMember().GetAvatarURL()}
 	}
 	return d
 }
@@ -921,8 +937,8 @@ func ProcessGithubMarkdown(s string) (text string, foldable string) {
 	processed = strings.TrimSpace(processed)
 
 	// 4. 安全阶段 (截断长度及最终清洗)
-	text = SafeText(processed, 2000)
-	foldable = SafeText(strings.Join(foldables, "\n\n"), 3000)
+	text = SafeText(processed, 50000)
+	foldable = SafeText(strings.Join(foldables, "\n\n"), 50000)
 
 	return text, foldable
 }
