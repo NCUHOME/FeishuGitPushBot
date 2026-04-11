@@ -31,12 +31,11 @@ type MessageRecord struct {
 	DeletedAt       time.Time `bun:",soft_delete,nullzero"`
 
 	// 关联原始事件 (新增)
-	EventID         uint64    `bun:",notnull"`
+	EventID uint64 `bun:",notnull"`
 
 	// 新增：图片状态，用于后台刷新
-	ImageStatus     string    `bun:",default:'done'"` // done, pending
-	AvatarURL       string    `bun:""`                // 原始头像 URL
-	CardString      string    `bun:"type:text"`       // 保存卡片全文用于对比
+	ImageStatus string `bun:",default:'done'"` // done, pending
+	AvatarURL   string `bun:""`                // 原始头像 URL
 }
 
 // WebhookEvent 存储所有来自 GitHub 的原始请求，持久化保存
@@ -58,7 +57,7 @@ type ImageCache struct {
 
 	URL       string    `bun:",pk"`
 	ImgKey    string    `bun:",notnull"`
-    Hash      string    `bun:",nullzero"` // 图片内容的哈希值 (MD5)
+	Hash      string    `bun:",nullzero"` // 图片内容的哈希值 (MD5)
 	UpdatedAt time.Time `bun:",nullzero,notnull,default:current_timestamp"`
 }
 

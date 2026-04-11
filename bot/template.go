@@ -12,20 +12,20 @@ import (
 )
 
 type EventDetail struct {
-	Title        string `json:"title"`
-	Text         string `json:"text"`
-	URL          string `json:"url"`
-	Ref          string `json:"ref"`      // 原始 Ref markdown
-	RefName      string `json:"ref_name"` // 纯文本引用名 (如 main)
-	RefURL       string `json:"ref_url"`  // 引用的 URL
-	ReplyToTitle string `json:"reply_to_title"`
-	FoldableBody string `json:"foldable_body"`
-	Skip         bool   `json:"skip"`
-	SHA          string `json:"sha"`
-	IsTag        bool   `json:"is_tag"`
+	Title         string   `json:"title"`
+	Text          string   `json:"text"`
+	URL           string   `json:"url"`
+	Ref           string   `json:"ref"`      // 原始 Ref markdown
+	RefName       string   `json:"ref_name"` // 纯文本引用名 (如 main)
+	RefURL        string   `json:"ref_url"`  // 引用的 URL
+	ReplyToTitle  string   `json:"reply_to_title"`
+	FoldableBody  string   `json:"foldable_body"`
+	Skip          bool     `json:"skip"`
+	SHA           string   `json:"sha"`
+	IsTag         bool     `json:"is_tag"`
 	AuthorAvatars []string `json:"author_avatars"` // 提交者或协作者的头像 URL 列表
 	AuthorLogins  []string `json:"author_logins"`  // 提交者或协作者的 login 列表（与 AuthorAvatars 顺序对应）
-	Action       string `json:"action"` // 事件具体动作
+	Action        string   `json:"action"`         // 事件具体动作
 	ExtraReply    string   `json:"extra_reply"`    // 需要另起一段话题回复的内容
 }
 
@@ -129,7 +129,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 					if name == "" {
 						name = login
 					}
-					
+
 					authorList := []string{}
 					if name != "" {
 						if login != "" {
@@ -138,7 +138,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 							authorList = append(authorList, name)
 						}
 					}
-					
+
 					// 添加 Co-authors
 					coAuthors := parseCoAuthors(c.GetMessage())
 					for _, ca := range coAuthors {
@@ -148,7 +148,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 							authorList = append(authorList, ca.Name)
 						}
 					}
-					
+
 					if len(authorList) > 0 {
 						authorPart = fmt.Sprintf(" (%s)", strings.Join(authorList, ", "))
 					}
@@ -812,7 +812,7 @@ func ProcessGithubMarkdown(s string) (text string, foldable string) {
 	// 2. 更加鲁棒地提取 <details> <summary> 内容 (支持属性如 <details open>)
 	reDetails := regexp.MustCompile(`(?is)<details.*?>\s*<summary.*?>(.*?)</summary>(.*?)</details>`)
 	var foldables []string
-	
+
 	// 提取并替换
 	processed := reDetails.ReplaceAllStringFunc(s, func(m string) string {
 		match := reDetails.FindStringSubmatch(m)
@@ -820,13 +820,13 @@ func ProcessGithubMarkdown(s string) (text string, foldable string) {
 			title := strings.TrimSpace(match[1])
 			// 移除 HTML 标签，只保留纯文本作为标题
 			title = regexp.MustCompile(`(?s)<.*?>`).ReplaceAllString(title, "")
-			
+
 			content := strings.TrimSpace(match[2])
 			// 移除内容中的所有 HTML 标签 (如 table, tr, td, br 等)
 			content = regexp.MustCompile(`(?s)<.*?>`).ReplaceAllString(content, "")
 			// 压缩多余换行
 			content = regexp.MustCompile(`\n{3,}`).ReplaceAllString(content, "\n\n")
-			
+
 			foldables = append(foldables, fmt.Sprintf("**%s**\n%s", title, strings.TrimSpace(content)))
 		}
 		return "" // 从主文档移除
@@ -835,7 +835,7 @@ func ProcessGithubMarkdown(s string) (text string, foldable string) {
 	// 3. 移除主体中可能残留的所有 HTML 标签
 	processed = regexp.MustCompile(`(?s)<.*?>`).ReplaceAllString(processed, "")
 	processed = strings.TrimSpace(processed)
-	
+
 	// 4. 安全阶段 (截断长度及最终清洗)
 	text = SafeText(processed, 2000)
 	foldable = SafeText(strings.Join(foldables, "\n\n"), 3000)

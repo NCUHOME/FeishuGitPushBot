@@ -233,5 +233,3 @@ func TestSendAllMessages(t *testing.T) {
 		})
 	}
 }
-
-

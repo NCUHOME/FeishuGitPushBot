@@ -151,7 +151,7 @@ func processWebhookEvent(event WebhookEvent) error {
 			Where("github_id = ? AND (event_type = 'workflow_run' OR event_type = 'workflow_job')", githubID).
 			Order("id DESC").
 			Limit(1).Scan(ctx); err == nil {
-			
+
 			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
 			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
 			buildCancel()
@@ -167,7 +167,7 @@ func processWebhookEvent(event WebhookEvent) error {
 		if err := DB.NewSelect().Model(&record).
 			Where("github_id = ? AND updated_at > ?", githubID, time.Now().Add(-5*time.Minute)).
 			Scan(ctx); err == nil {
-			
+
 			var prevDetail EventDetail
 			_ = json.Unmarshal([]byte(record.Content), &prevDetail)
 			detail.Text = prevDetail.Text + "\n" + detail.Text
@@ -189,10 +189,10 @@ func processWebhookEvent(event WebhookEvent) error {
 	// 5. 查找父级 ID (回复逻辑)
 	var parentID string
 	// 改为：只要是 Issue/PR 相关的非“创建”事件，都尝试寻找父消息进行话题回复
-	isIssueOrPR := event.EventType == "issue_comment" || 
-		event.EventType == "pull_request_review_comment" || 
-		event.EventType == "pull_request_review" || 
-		event.EventType == "pull_request" || 
+	isIssueOrPR := event.EventType == "issue_comment" ||
+		event.EventType == "pull_request_review_comment" ||
+		event.EventType == "pull_request_review" ||
+		event.EventType == "pull_request" ||
 		event.EventType == "issues"
 
 	action := ext(m, "action")
@@ -223,7 +223,7 @@ func processWebhookEvent(event WebhookEvent) error {
 					// 如果我们已经有了带 repo 的 ID 前缀，直接搜索完整匹配或相似匹配
 					searchID = fmt.Sprintf("%%:%s:%s", repo, issueNum)
 				}
-				
+
 				if err := DB.NewSelect().Model(&record).
 					Where("github_id = ? OR github_id LIKE ?", fmt.Sprintf("pr:%s:%s", repo, issueNum), searchID).
 					WhereOr("github_id = ?", fmt.Sprintf("issue:%s:%s", repo, issueNum)).
@@ -276,7 +276,7 @@ func processWebhookEvent(event WebhookEvent) error {
 
 	// 此时 BuildCard 调用 GetImageKey 是纯内存/DB查询，刚才同步上传成功的会立即显示
 	card := BuildCard(ctx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
-	
+
 	var msgID string
 	var sendErr error
 	if parentID != "" {

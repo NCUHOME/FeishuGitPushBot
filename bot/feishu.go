@@ -60,8 +60,8 @@ func syncUploadImage(ctx context.Context, url string) string {
 		return ""
 	}
 	defer imageRes.Body.Close()
-	imgData, _ := io.ReadAll(imageRes.Body)
-	if len(imgData) == 0 {
+	imgData, err := io.ReadAll(imageRes.Body)
+	if err != nil || len(imgData) == 0 {
 		return ""
 	}
 	newHash := fmt.Sprintf("%x", md5.Sum(imgData))
@@ -282,8 +282,8 @@ func SendCard(card *Card) error {
 
 func genSign(secret string, ts int64) (string, error) {
 	str := fmt.Sprintf("%v\n%s", ts, secret)
-	h := hmac.New(sha256.New, []byte(str))
-	if _, err := h.Write(nil); err != nil {
+	h := hmac.New(sha256.New, []byte(""))
+	if _, err := h.Write([]byte(str)); err != nil {
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(h.Sum(nil)), nil
@@ -314,9 +314,9 @@ type CardConfig struct {
 // CardHeader 卡片标题区
 type CardHeader struct {
 	// title 必须为 plain_text 或 lark_md
-	Title    CardText `json:"title"`
+	Title CardText `json:"title"`
 	// template 控制标题栏背景色: blue/green/red/orange/grey/purple/indigo/wathet/turquoise/yellow/lime/pink/carmine
-	Template string   `json:"template,omitempty"`
+	Template string `json:"template,omitempty"`
 	// subtitle 副标题（可选）
 	Subtitle *CardText `json:"subtitle,omitempty"`
 }
@@ -392,7 +392,7 @@ func (c *Card) AddCollapsiblePanel(title, content string) {
 			},
 		},
 		"border": map[string]any{
-			"color":        "grey",
+			"color":         "grey",
 			"corner_radius": "4px",
 		},
 	})
@@ -431,8 +431,8 @@ func (c *Card) AddActions(layout string, buttons ...ActionButton) {
 
 // ActionButton 按钮描述
 type ActionButton struct {
-	Text     string
-	URL      string
+	Text string
+	URL  string
 	// Type: primary / danger / default
 	Type     string
 	Disabled bool
@@ -551,4 +551,3 @@ type CardElement struct {
 
 // Text 兼容旧版 Text 类型（与 CardText 等价）
 type Text = CardText
-

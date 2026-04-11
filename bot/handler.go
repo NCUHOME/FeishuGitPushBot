@@ -22,8 +22,6 @@ func GithubHandler(c *gin.Context) {
 	}
 
 	eventType := github.WebHookType(c.Request)
-	
-
 
 	event, err := github.ParseWebHook(eventType, payload)
 	if err != nil {
