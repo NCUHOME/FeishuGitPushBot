@@ -441,9 +441,29 @@ func ParseEvent(event any, eventType string) EventDetail {
 		}
 		d.Text = strings.Join(pages, "\n")
 
-	case *github.CreateEvent, *github.DeleteEvent:
-		// 已经在 GitHub 后台关闭对应 Webhook，且 Push 事件已涵盖此类逻辑，此处统一跳过
-		d.Skip = true
+	case *github.CreateEvent:
+		if e.GetRefType() == "tag" {
+			ref := e.GetRef()
+			repoUrl := e.GetRepo().GetHTMLURL()
+			d.Title = fmt.Sprintf("🏷️ New Tag: %s", ref)
+			d.RefName = ref
+			d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, ref)
+			d.URL = d.RefURL
+			d.IsTag = true
+		} else {
+			// 分支创建通常由 Push 事件处理，这里跳过
+			d.Skip = true
+		}
+
+	case *github.DeleteEvent:
+		if e.GetRefType() == "tag" {
+			ref := e.GetRef()
+			d.Title = fmt.Sprintf("🗑️ Tag Deleted: %s", ref)
+			d.RefName = ref
+			d.IsTag = true
+		} else {
+			d.Skip = true
+		}
 
 	case *github.PublicEvent:
 		d.Title = "🔓 Repository Made Public"
@@ -474,8 +494,23 @@ func ParseEvent(event any, eventType string) EventDetail {
 		d.Action = e.GetAction()
 		d.URL = e.GetOrganization().GetHTMLURL()
 
+	case *github.TeamEvent:
+		d.Title = fmt.Sprintf("👥 Team %s: %s", e.GetTeam().GetName(), e.GetAction())
+		d.Text = fmt.Sprintf("Action: **%s**\nTeam: **%s**", e.GetAction(), e.GetTeam().GetName())
+		if e.GetRepo() != nil {
+			d.Text += fmt.Sprintf("\nRepo: **%s**", e.GetRepo().GetFullName())
+		}
+		d.Action = e.GetAction()
+		d.URL = e.GetTeam().GetHTMLURL()
+
+	case *github.MemberEvent:
+		d.Title = fmt.Sprintf("👤 Member %s: %s", e.GetMember().GetLogin(), e.GetAction())
+		d.Text = fmt.Sprintf("Action: **%s**\nMember: **%s**", e.GetAction(), e.GetMember().GetLogin())
+		d.Action = e.GetAction()
+		d.URL = e.GetMember().GetHTMLURL()
+
 	case *github.MembershipEvent:
-		d.Title = fmt.Sprintf("👥 Membership %s", e.GetAction())
+		d.Title = fmt.Sprintf("👥 Membership %s: %s", e.GetMember().GetLogin(), e.GetAction())
 		d.Text = fmt.Sprintf("Action: **%s**\nMember: **%s**\nScope: **%s**", e.GetAction(), e.GetMember().GetLogin(), e.GetScope())
 		d.Action = e.GetAction()
 	}
