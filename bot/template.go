@@ -106,7 +106,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 				}
 
 				msg := SafeText(c.GetMessage(), 400)
-				msg = ProcessCommitMessage(msg)
+				msg = ProcessCommitMessage(msg, repoUrl)
 
 				shortSHA := ""
 				if sha := c.GetID(); sha != "" {
@@ -763,14 +763,63 @@ func SafeText(s string, maxRunes int) string {
 }
 
 var conventionalRegex = regexp.MustCompile(`(?i)(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert|ref)(\([^)]+\))?(!?):`)
+var shaRegex = regexp.MustCompile(`\b([0-9a-f]{7,40})\b`)
+var issueRegex = regexp.MustCompile(`(?i)(?:^|[\s,.\-=(])#(\d+)\b`)
 
-// ProcessCommitMessage 处理提交信息，转换 emoji 并高亮 Conventional Commit 前缀
-func ProcessCommitMessage(msg string) string {
+// Linkify 将文本中的 SHA 哈希和 #123 转换为 GitHub 链接
+func Linkify(text, repoUrl string) string {
+	if repoUrl == "" {
+		return text
+	}
+
+	// 1. 处理 SHA 哈希 (7-40位 16 进制)
+	text = shaRegex.ReplaceAllStringFunc(text, func(sha string) string {
+		// 启发式校验 SHA: 如果主要是数字且很短，则可能是版本号或其他 ID
+		hasLetter := false
+		for _, r := range sha {
+			if (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+				hasLetter = true
+				break
+			}
+		}
+		// 长度较短且不含字母（如 1234567）可能是地块价格或其他 ID，跳过
+		if !hasLetter && len(sha) < 10 {
+			return sha
+		}
+
+		displaySHA := sha
+		if len(sha) > 7 {
+			displaySHA = sha[:7]
+		}
+		return fmt.Sprintf("[%s](%s/commit/%s)", displaySHA, repoUrl, sha)
+	})
+
+	// 2. 处理 Issue/PR 引用 (#123)
+	text = issueRegex.ReplaceAllStringFunc(text, func(match string) string {
+		idx := strings.Index(match, "#")
+		if idx == -1 {
+			return match
+		}
+		prefix := match[:idx]
+		number := match[idx+1:]
+		return fmt.Sprintf("%s[#%s](%s/issues/%s)", prefix, number, repoUrl, number)
+	})
+
+	return text
+}
+
+// ProcessCommitMessage 处理提交信息，转换 emoji、高亮 Conventional Commit 前缀，并转换 SHA/Issue 为链接
+func ProcessCommitMessage(msg string, repoUrl string) string {
 	msg = strings.TrimSpace(msg)
 	// 1. 转换 Emoji 短代码
 	msg = emoji.Sprint(msg)
 
-	// 2. 高亮 Conventional Commit 并处理格式
+	// 2. 转换 SHA 和 #Issue (在加粗前处理，避免 Markdown 嵌套冲突)
+	if repoUrl != "" {
+		msg = Linkify(msg, repoUrl)
+	}
+
+	// 3. 高亮 Conventional Commit 并处理格式
 	matches := conventionalRegex.FindAllStringIndex(msg, -1)
 	if len(matches) == 0 {
 		return msg
