@@ -56,7 +56,7 @@ func GetImageKey(ctx context.Context, url string) string {
 func syncUploadImage(ctx context.Context, url string) string {
 	// 1. 下载图片 (使用传入的 ctx，受限时控制)
 	imageRes, err := httpClient.R().SetContext(ctx).Get(url)
-	if err != nil || imageRes.IsError() {
+	if err != nil || imageRes == nil || imageRes.IsError() {
 		return ""
 	}
 	defer imageRes.Body.Close()
@@ -107,7 +107,7 @@ func syncUploadImage(ctx context.Context, url string) string {
 		}
 	}
 
-	if err != nil || resp == nil || !resp.Success() {
+	if err != nil || resp == nil || !resp.Success() || resp.Data == nil || resp.Data.ImageKey == nil {
 		return ""
 	}
 
@@ -193,7 +193,7 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 					Build()).
 				Build())
 			cancel()
-			if err == nil && resp.Success() {
+			if err == nil && resp.Success() && resp.Data != nil {
 				return *resp.Data.MessageId, nil
 			}
 			time.Sleep(time.Duration(i+1) * 2 * time.Second)
@@ -201,7 +201,10 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return "", fmt.Errorf("reply message failed code=%d msg=%s", resp.Code, resp.Msg)
+		if resp != nil && !resp.Success() {
+			return "", fmt.Errorf("reply message failed code=%d msg=%s", resp.Code, resp.Msg)
+		}
+		return "", fmt.Errorf("reply message failed: resp is nil or data is nil")
 	}
 
 	if chatID == "" {
@@ -226,7 +229,7 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 				Build()).
 			Build())
 		cancel()
-		if err == nil && resp.Success() {
+		if err == nil && resp.Success() && resp.Data != nil {
 			return *resp.Data.MessageId, nil
 		}
 		time.Sleep(time.Duration(i+1) * 2 * time.Second)
@@ -234,10 +237,10 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !resp.Success() {
+	if resp != nil && !resp.Success() {
 		return "", fmt.Errorf("send message failed code=%d msg=%s", resp.Code, resp.Msg)
 	}
-	return *resp.Data.MessageId, nil
+	return "", fmt.Errorf("send message failed: resp is nil or data is nil")
 }
 
 // SendCard 通过 Webhook 发送卡片（兜底兼容模式）
@@ -282,7 +285,7 @@ func SendCard(card *Card) error {
 
 func genSign(secret string, ts int64) (string, error) {
 	str := fmt.Sprintf("%v\n%s", ts, secret)
-	h := hmac.New(sha256.New, []byte(""))
+	h := hmac.New(sha256.New, []byte(secret))
 	if _, err := h.Write([]byte(str)); err != nil {
 		return "", err
 	}

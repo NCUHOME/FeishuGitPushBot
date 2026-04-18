@@ -36,6 +36,15 @@ type MessageRecord struct {
 	// 新增：图片状态，用于后台刷新
 	ImageStatus string `bun:",default:'done'"` // done, pending
 	AvatarURL   string `bun:""`                // 原始头像 URL
+
+	// Workflow 专用：记录开始运行时间，用于超时提醒
+	WorkflowStartedAt time.Time `bun:",nullzero"`
+	// Workflow 专用：是否已经发送过超时提醒
+	TimeoutNotified bool `bun:",default:false"`
+}
+
+func (m *MessageRecord) BeforeCreateTable(ctx context.Context, query *bun.CreateTableQuery) error {
+	return nil
 }
 
 // WebhookEvent 存储所有来自 GitHub 的原始请求，持久化保存

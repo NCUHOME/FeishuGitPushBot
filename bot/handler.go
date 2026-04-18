@@ -72,6 +72,9 @@ func GithubHandler(c *gin.Context) {
 }
 
 func ext(m map[string]any, keys ...string) string {
+	if m == nil || len(keys) == 0 {
+		return ""
+	}
 	var cur any = m
 	for _, k := range keys {
 		cm, ok := cur.(map[string]any)
@@ -79,6 +82,9 @@ func ext(m map[string]any, keys ...string) string {
 			return ""
 		}
 		cur = cm[k]
+		if cur == nil {
+			return ""
+		}
 	}
 	switch v := cur.(type) {
 	case string:

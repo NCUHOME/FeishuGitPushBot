@@ -94,6 +94,13 @@ func processWebhookEvent(event WebhookEvent) error {
 	senderUrl := ext(m, "sender", "html_url")
 	avatarUrl := ext(m, "sender", "avatar_url")
 	ref := ext(m, "ref")
+	// Workflow 事件的 ref 在 head_branch 中
+	if ref == "" {
+		ref = ext(m, "workflow_run", "head_branch")
+	}
+	if ref == "" {
+		ref = ext(m, "workflow_job", "head_branch")
+	}
 
 	// 检查是否为 Bot 用户
 	isBotUser := false
@@ -124,7 +131,8 @@ func processWebhookEvent(event WebhookEvent) error {
 	case "workflow_run":
 		githubID = ext(m, "workflow_run", "id")
 	case "workflow_job":
-		githubID = ext(m, "workflow_job", "run_id")
+		// 使用 job 自己的 id，而不是 run_id，这样每个 job 都有独立的通知
+		githubID = ext(m, "workflow_job", "id")
 	case "push":
 		githubID = fmt.Sprintf("push:%s:%s", repo, ref)
 	case "create":
@@ -158,19 +166,63 @@ func processWebhookEvent(event WebhookEvent) error {
 	}
 
 	// 4. 合并与更新逻辑
-	// 4.1 Workflow 事件：更新同一条 workflow 的消息
+	// 4.1 Workflow 事件：更新同一条 workflow 的消息，支持超时提醒
 	if (event.EventType == "workflow_run" || event.EventType == "workflow_job") && githubID != "" {
 		var record MessageRecord
 		if err := DB.NewSelect().Model(&record).
-			Where("github_id = ? AND (event_type = 'workflow_run' OR event_type = 'workflow_job')", githubID).
+			Where("github_id = ? AND event_type = ?", githubID, event.EventType).
 			Order("id DESC").
 			Limit(1).Scan(ctx); err == nil {
 
+			// 获取当前状态
+			status := ""
+			conclusion := ""
+			if event.EventType == "workflow_run" {
+				status = ext(m, "workflow_run", "status")
+				conclusion = ext(m, "workflow_run", "conclusion")
+			} else {
+				status = ext(m, "workflow_job", "status")
+				conclusion = ext(m, "workflow_job", "conclusion")
+			}
+
+			// 检查是否需要超时提醒（运行中且超过10分钟）
+			needTimeoutNotify := false
+			if conclusion == "" && status == "in_progress" && !record.WorkflowStartedAt.IsZero() {
+				if time.Since(record.WorkflowStartedAt) > 10*time.Minute && !record.TimeoutNotified {
+					needTimeoutNotify = true
+				}
+			}
+
+			// 如果已完成，重置超时提醒标志
+			if conclusion != "" && record.TimeoutNotified {
+				_, _ = DB.NewUpdate().Model(&record).
+					Set("timeout_notified = ?", false).
+					WherePK().Exec(ctx)
+			}
+
+			// 如果需要超时提醒，发送回复提醒
+			if needTimeoutNotify {
+				timeoutCard := NewCard()
+				timeoutCard.Header.Title = CardText{Tag: "plain_text", Content: "⏰ Workflow 运行超时提醒"}
+				timeoutCard.Header.Template = "orange"
+				duration := time.Since(record.WorkflowStartedAt).Round(time.Minute)
+				timeoutCard.AddMarkdown(fmt.Sprintf("**%s** 已经运行 **%s**，请检查是否卡住", detail.Title, duration))
+				if _, err := ReplyToMessage(record.FeishuMessageID, timeoutCard); err == nil {
+					// 标记已发送超时提醒
+					_, _ = DB.NewUpdate().Model(&record).
+						Set("timeout_notified = ?", true).
+						WherePK().Exec(ctx)
+					slog.Info("Workflow timeout notification sent", "github_id", githubID, "duration", duration)
+				}
+				// 继续更新原消息状态
+			}
+
+			// 正常更新原消息
 			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
 			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
 			buildCancel()
 			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
-				slog.Info("Workflow card asynchronously updated", "github_id", githubID)
+				slog.Info("Workflow card updated", "github_id", githubID, "event_type", event.EventType)
 				return nil
 			}
 		}
@@ -343,18 +395,38 @@ func processWebhookEvent(event WebhookEvent) error {
 	// 7. 保存记录
 	if githubID != "" && msgID != "" {
 		detailJson, _ := json.Marshal(detail)
+
+		// Workflow 事件：记录开始时间
+		workflowStartedAt := time.Time{}
+		if event.EventType == "workflow_run" || event.EventType == "workflow_job" {
+			status := ""
+			conclusion := ""
+			if event.EventType == "workflow_run" {
+				status = ext(m, "workflow_run", "status")
+				conclusion = ext(m, "workflow_run", "conclusion")
+			} else {
+				status = ext(m, "workflow_job", "status")
+				conclusion = ext(m, "workflow_job", "conclusion")
+			}
+			// 只有在运行中且无结论时才记录开始时间
+			if status == "in_progress" && conclusion == "" {
+				workflowStartedAt = time.Now()
+			}
+		}
+
 		_, _ = DB.NewInsert().Model(&MessageRecord{
-			GithubID:        githubID,
-			FeishuMessageID: msgID,
-			ChatID:          C.Feishu.ChatID,
-			RepoName:        repo,
-			Ref:             ref,
-			EventType:       event.EventType,
-			Content:         string(detailJson),
-			CardString:      card.String(),
-			ImageStatus:     imageStatus,
-			AvatarURL:       avatarUrl,
-			EventID:         event.ID,
+			GithubID:          githubID,
+			FeishuMessageID:   msgID,
+			ChatID:            C.Feishu.ChatID,
+			RepoName:          repo,
+			Ref:               ref,
+			EventType:         event.EventType,
+			Content:           string(detailJson),
+			CardString:        card.String(),
+			ImageStatus:       imageStatus,
+			AvatarURL:         avatarUrl,
+			EventID:           event.ID,
+			WorkflowStartedAt: workflowStartedAt,
 		}).Exec(ctx)
 	}
 

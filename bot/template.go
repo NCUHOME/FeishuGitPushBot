@@ -53,7 +53,10 @@ func ParseEvent(event any, eventType string) EventDetail {
 		} else {
 			refShort = strings.TrimPrefix(ref, "refs/heads/")
 		}
-		repoUrl := e.GetRepo().GetHTMLURL()
+		repoUrl := ""
+		if repo := e.GetRepo(); repo != nil {
+			repoUrl = repo.GetHTMLURL()
+		}
 
 		// 跳过 tag 的创建和删除事件，由 CreateEvent/DeleteEvent 处理，避免重复推送
 		if isTag && (e.GetCreated() || e.GetDeleted()) {
@@ -76,9 +79,14 @@ func ParseEvent(event any, eventType string) EventDetail {
 			authors := make(map[string]bool)
 			avatarMap := make(map[string]string)
 			for _, c := range e.Commits {
-				login := c.GetAuthor().GetLogin()
+				login := ""
+				if author := c.GetAuthor(); author != nil {
+					login = author.GetLogin()
+				}
 				if login == "" {
-					login = c.GetCommitter().GetLogin()
+					if committer := c.GetCommitter(); committer != nil {
+						login = committer.GetLogin()
+					}
 				}
 				if login != "" {
 					authors[login] = true
@@ -128,13 +136,17 @@ func ParseEvent(event any, eventType string) EventDetail {
 					hashPart = fmt.Sprintf(" ([%s](%s))", shortSHA, c.GetURL())
 				}
 
-				authorPart := ""
-				if multiAuthor {
-					login := c.GetAuthor().GetLogin()
-					name := c.GetAuthor().GetName()
-					if name == "" {
-						name = login
-					}
+			authorPart := ""
+			if multiAuthor {
+				login := ""
+				name := ""
+				if author := c.GetAuthor(); author != nil {
+					login = author.GetLogin()
+					name = author.GetName()
+				}
+				if name == "" {
+					name = login
+				}
 
 					authorList := []string{}
 					if name != "" {
@@ -195,6 +207,10 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 	case *github.PullRequestEvent:
 		pr := e.GetPullRequest()
+		if pr == nil {
+			d.Skip = true
+			return d
+		}
 		action := e.GetAction()
 		d.Action = action
 		switch action {
@@ -217,7 +233,10 @@ func ParseEvent(event any, eventType string) EventDetail {
 		}
 
 		if action == "labeled" || action == "unlabeled" {
-			label := e.GetLabel().GetName()
+			label := ""
+			if l := e.GetLabel(); l != nil {
+				label = l.GetName()
+			}
 			d.Text = fmt.Sprintf("**%s**\n\nLabel: `%s`", pr.GetTitle(), label)
 		} else {
 			text, foldable := ProcessGithubMarkdown(pr.GetBody())
@@ -233,15 +252,32 @@ func ParseEvent(event any, eventType string) EventDetail {
 			d.FoldableBody = foldable
 		}
 
-		d.RefName = fmt.Sprintf("%s ➔ %s", pr.GetHead().GetRef(), pr.GetBase().GetRef())
-		if headRepo := pr.GetHead().GetRepo(); headRepo != nil {
-			d.RefURL = fmt.Sprintf("%s/tree/%s", headRepo.GetHTMLURL(), pr.GetHead().GetRef())
+		refName := ""
+		if head := pr.GetHead(); head != nil {
+			refName = head.GetRef()
+		}
+		if base := pr.GetBase(); base != nil {
+			if refName != "" {
+				refName = refName + " ➔ " + base.GetRef()
+			} else {
+				refName = base.GetRef()
+			}
+		}
+		d.RefName = refName
+		if head := pr.GetHead(); head != nil {
+			if headRepo := head.GetRepo(); headRepo != nil {
+				d.RefURL = fmt.Sprintf("%s/tree/%s", headRepo.GetHTMLURL(), head.GetRef())
+			}
 		}
 		d.URL = pr.GetHTMLURL()
 
 	case *github.IssuesEvent:
 		action := e.GetAction()
 		iss := e.GetIssue()
+		if iss == nil {
+			d.Skip = true
+			return d
+		}
 		switch action {
 		case "opened":
 			d.Title = "🍄 New Issue"
@@ -263,11 +299,16 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 	case *github.IssueCommentEvent:
 		iss := e.GetIssue()
+		comment := e.GetComment()
+		if iss == nil || comment == nil {
+			d.Skip = true
+			return d
+		}
 		action := e.GetAction()
 		d.Title = fmt.Sprintf("🌻 Comment %s", action)
 		d.Action = action
 
-		body := e.GetComment().GetBody()
+		body := comment.GetBody()
 		if action == "edited" && e.Changes != nil && e.Changes.Body != nil && e.Changes.Body.From != nil {
 			body = GetDiffOnlyAdded(*e.Changes.Body.From, body)
 		}
@@ -285,11 +326,16 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 	case *github.PullRequestReviewCommentEvent:
 		pr := e.GetPullRequest()
+		comment := e.GetComment()
+		if pr == nil || comment == nil {
+			d.Skip = true
+			return d
+		}
 		action := e.GetAction()
 		d.Title = fmt.Sprintf("💬 PR Comment %s", action)
 		d.Action = action
 
-		body := e.GetComment().GetBody()
+		body := comment.GetBody()
 		if action == "edited" && e.Changes != nil && e.Changes.Body != nil && e.Changes.Body.From != nil {
 			body = GetDiffOnlyAdded(*e.Changes.Body.From, body)
 		}
@@ -300,15 +346,20 @@ func ParseEvent(event any, eventType string) EventDetail {
 		} else {
 			d.Text = fmt.Sprintf("**%s**", pr.GetTitle())
 		}
-		d.URL = e.GetComment().GetHTMLURL()
+		d.URL = comment.GetHTMLURL()
 
 	case *github.PullRequestReviewEvent:
 		pr := e.GetPullRequest()
+		review := e.GetReview()
+		if pr == nil || review == nil {
+			d.Skip = true
+			return d
+		}
 		action := e.GetAction()
 		d.Title = fmt.Sprintf("🧐 PR Review %s", action)
 		d.Action = action
 
-		body := e.GetReview().GetBody()
+		body := review.GetBody()
 		// PullRequestReviewEvent 在 go-github 中目前没有 Changes 字段
 		reviewBody := SafeText(strings.TrimSpace(body), 50000)
 		if reviewBody != "" {
@@ -316,10 +367,14 @@ func ParseEvent(event any, eventType string) EventDetail {
 		} else {
 			d.Text = fmt.Sprintf("**%s**", pr.GetTitle())
 		}
-		d.URL = e.GetReview().GetHTMLURL()
+		d.URL = review.GetHTMLURL()
 
 	case *github.WorkflowRunEvent:
 		wr := e.GetWorkflowRun()
+		if wr == nil {
+			d.Skip = true
+			return d
+		}
 		status := wr.GetStatus()
 		conclusion := wr.GetConclusion()
 		workflowName := wr.GetName()
@@ -351,7 +406,10 @@ func ParseEvent(event any, eventType string) EventDetail {
 		}
 
 		d.SHA = shortSHA
-		repoUrl := e.GetRepo().GetHTMLURL()
+		repoUrl := ""
+		if repo := e.GetRepo(); repo != nil {
+			repoUrl = repo.GetHTMLURL()
+		}
 		if repoUrl != "" && ref != "" {
 			d.RefURL = fmt.Sprintf("%s/tree/%s", repoUrl, ref)
 		}
@@ -360,10 +418,14 @@ func ParseEvent(event any, eventType string) EventDetail {
 		var lines []string
 		durationPart := ""
 		if conclusion != "" {
-			start := wr.GetRunStartedAt().Time
-			end := wr.GetUpdatedAt().Time
-			if !start.IsZero() && !end.IsZero() {
-				durationPart = fmt.Sprintf(" in %s", FormatDuration(end.Sub(start)))
+			startedAt := wr.GetRunStartedAt()
+			updatedAt := wr.GetUpdatedAt()
+			if !startedAt.IsZero() && !updatedAt.IsZero() {
+				start := startedAt.Time
+				end := updatedAt.Time
+				if !start.IsZero() && !end.IsZero() {
+					durationPart = fmt.Sprintf(" in %s", FormatDuration(end.Sub(start)))
+				}
 			}
 		}
 		lines = append(lines, fmt.Sprintf("%s **%s** workflow run %s%s", icon, workflowName, stateVerb, durationPart))
@@ -374,6 +436,10 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 	case *github.WorkflowJobEvent:
 		wj := e.GetWorkflowJob()
+		if wj == nil {
+			d.Skip = true
+			return d
+		}
 		status := wj.GetStatus()
 		conclusion := wj.GetConclusion()
 		jobName := wj.GetName()
@@ -410,18 +476,25 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 		durationPart := ""
 		if conclusion != "" {
-			start := wj.GetStartedAt().Time
-			end := wj.GetCompletedAt().Time
-			if !start.IsZero() && !end.IsZero() {
-				durationPart = fmt.Sprintf(" in %s", FormatDuration(end.Sub(start)))
+			startedAt := wj.GetStartedAt()
+			completedAt := wj.GetCompletedAt()
+			if !startedAt.IsZero() && !completedAt.IsZero() {
+				start := startedAt.Time
+				end := completedAt.Time
+				if !start.IsZero() && !end.IsZero() {
+					durationPart = fmt.Sprintf(" in %s", FormatDuration(end.Sub(start)))
+				}
 			}
 		}
 		lines = append(lines, fmt.Sprintf("%s job **%s** %s%s", icon, displayJobName, stateVerb, durationPart))
 
 		d.Text = strings.Join(lines, "\n")
 		d.RefName = wj.GetHeadBranch()
-		if repoUrl := e.GetRepo().GetHTMLURL(); repoUrl != "" && wj.GetHeadBranch() != "" {
-			d.RefURL = fmt.Sprintf("%s/tree/%s", repoUrl, wj.GetHeadBranch())
+		if repo := e.GetRepo(); repo != nil {
+			repoUrl := repo.GetHTMLURL()
+			if repoUrl != "" && wj.GetHeadBranch() != "" {
+				d.RefURL = fmt.Sprintf("%s/tree/%s", repoUrl, wj.GetHeadBranch())
+			}
 		}
 		d.URL = wj.GetHTMLURL()
 
@@ -440,6 +513,10 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 	case *github.ForkEvent:
 		forkee := e.GetForkee()
+		if forkee == nil {
+			d.Skip = true
+			return d
+		}
 		d.Title = "🍴 Repository Forked"
 		d.Text = fmt.Sprintf("Repository forked to [%s](%s)", forkee.GetFullName(), forkee.GetHTMLURL())
 
@@ -454,11 +531,16 @@ func ParseEvent(event any, eventType string) EventDetail {
 	case *github.CreateEvent:
 		if e.GetRefType() == "tag" {
 			ref := e.GetRef()
-			repoUrl := e.GetRepo().GetHTMLURL()
+			repoUrl := ""
+			if repo := e.GetRepo(); repo != nil {
+				repoUrl = repo.GetHTMLURL()
+			}
 			d.Title = fmt.Sprintf("🏷️ New Tag: %s", ref)
 			d.RefName = ref
-			d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, ref)
-			d.URL = d.RefURL
+			if repoUrl != "" {
+				d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, ref)
+				d.URL = d.RefURL
+			}
 			d.IsTag = true
 		} else {
 			// 分支创建通常由 Push 事件处理，这里跳过
@@ -491,7 +573,9 @@ func ParseEvent(event any, eventType string) EventDetail {
 			d.Title = "🗑️ Repository Deleted"
 		case "renamed":
 			d.Title = "📝 Repository Renamed"
-			d.Text = fmt.Sprintf("Renamed to **%s**", e.GetRepo().GetFullName())
+			if repo := e.GetRepo(); repo != nil {
+				d.Text = fmt.Sprintf("Renamed to **%s**", repo.GetFullName())
+			}
 		default:
 			// 其他 edited 事件（如修改描述、Logo 等）通常比较琐碎，默认跳过
 			d.Skip = true
@@ -499,8 +583,17 @@ func ParseEvent(event any, eventType string) EventDetail {
 		d.Action = action
 
 	case *github.OrganizationEvent:
-		d.Title = fmt.Sprintf("🏢 Org %s: %s", e.GetOrganization().GetLogin(), e.GetAction())
-		member := e.GetMembership().GetUser()
+		org := e.GetOrganization()
+		membership := e.GetMembership()
+		if org == nil || membership == nil {
+			d.Skip = true
+			return d
+		}
+		member := membership.GetUser()
+		if member == nil {
+			d.Skip = true
+			return d
+		}
 		login := member.GetLogin()
 		if login == "****" || login == "" {
 			// 如果是邀请，尝试从其他地方获取信息（如暂时显示为 "New Member"）
@@ -508,35 +601,50 @@ func ParseEvent(event any, eventType string) EventDetail {
 				login = "Someone"
 			}
 		}
+		d.Title = fmt.Sprintf("🏢 Org %s: %s", org.GetLogin(), e.GetAction())
 		d.Text = fmt.Sprintf("Action: **%s**\nMember: **%s**", e.GetAction(), login)
 		d.Action = e.GetAction()
-		d.URL = e.GetOrganization().GetHTMLURL()
+		d.URL = org.GetHTMLURL()
 		if login != "" && login != "****" {
 			d.AuthorLogins = []string{login}
 			d.AuthorAvatars = []string{member.GetAvatarURL()}
 		}
 
 	case *github.TeamEvent:
-		d.Title = fmt.Sprintf("👥 Team %s: %s", e.GetTeam().GetName(), e.GetAction())
-		d.Text = fmt.Sprintf("Action: **%s**\nTeam: **%s**", e.GetAction(), e.GetTeam().GetName())
-		if e.GetRepo() != nil {
-			d.Text += fmt.Sprintf("\nRepo: **%s**", e.GetRepo().GetFullName())
+		team := e.GetTeam()
+		if team == nil {
+			d.Skip = true
+			return d
+		}
+		d.Title = fmt.Sprintf("👥 Team %s: %s", team.GetName(), e.GetAction())
+		d.Text = fmt.Sprintf("Action: **%s**\nTeam: **%s**", e.GetAction(), team.GetName())
+		if repo := e.GetRepo(); repo != nil {
+			d.Text += fmt.Sprintf("\nRepo: **%s**", repo.GetFullName())
 		}
 		d.Action = e.GetAction()
-		d.URL = e.GetTeam().GetHTMLURL()
+		d.URL = team.GetHTMLURL()
 
 	case *github.MemberEvent:
-		d.Title = fmt.Sprintf("👤 Member %s: %s", e.GetMember().GetLogin(), e.GetAction())
-		d.Text = fmt.Sprintf("Action: **%s**\nMember: **%s**", e.GetAction(), e.GetMember().GetLogin())
+		member := e.GetMember()
+		if member == nil {
+			d.Skip = true
+			return d
+		}
+		d.Title = fmt.Sprintf("👤 Member %s: %s", member.GetLogin(), e.GetAction())
+		d.Text = fmt.Sprintf("Action: **%s**\nMember: **%s**", e.GetAction(), member.GetLogin())
 		d.Action = e.GetAction()
-		d.URL = e.GetMember().GetHTMLURL()
-		d.AuthorLogins = []string{e.GetMember().GetLogin()}
-		d.AuthorAvatars = []string{e.GetMember().GetAvatarURL()}
+		d.URL = member.GetHTMLURL()
+		d.AuthorLogins = []string{member.GetLogin()}
+		d.AuthorAvatars = []string{member.GetAvatarURL()}
 
 	case *github.ReleaseEvent:
 		action := e.GetAction()
 		release := e.GetRelease()
 		repo := e.GetRepo()
+		if release == nil {
+			d.Skip = true
+			return d
+		}
 		d.Action = action
 		d.URL = release.GetHTMLURL()
 
@@ -563,7 +671,9 @@ func ParseEvent(event any, eventType string) EventDetail {
 		var lines []string
 		if tag := release.GetTagName(); tag != "" {
 			d.RefName = tag
-			d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repo.GetHTMLURL(), tag)
+			if repo != nil {
+				d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repo.GetHTMLURL(), tag)
+			}
 			lines = append(lines, fmt.Sprintf("**Tag:** `%s`", tag))
 		}
 		if author := release.GetAuthor(); author != nil {
@@ -580,11 +690,16 @@ func ParseEvent(event any, eventType string) EventDetail {
 		d.Text = strings.Join(lines, "\n")
 
 	case *github.MembershipEvent:
-		d.Title = fmt.Sprintf("👥 Membership %s: %s", e.GetMember().GetLogin(), e.GetAction())
-		d.Text = fmt.Sprintf("Action: **%s**\nMember: **%s**\nScope: **%s**", e.GetAction(), e.GetMember().GetLogin(), e.GetScope())
+		member := e.GetMember()
+		if member == nil {
+			d.Skip = true
+			return d
+		}
+		d.Title = fmt.Sprintf("👥 Membership %s: %s", member.GetLogin(), e.GetAction())
+		d.Text = fmt.Sprintf("Action: **%s**\nMember: **%s**\nScope: **%s**", e.GetAction(), member.GetLogin(), e.GetScope())
 		d.Action = e.GetAction()
-		d.AuthorLogins = []string{e.GetMember().GetLogin()}
-		d.AuthorAvatars = []string{e.GetMember().GetAvatarURL()}
+		d.AuthorLogins = []string{member.GetLogin()}
+		d.AuthorAvatars = []string{member.GetAvatarURL()}
 	}
 	return d
 }
