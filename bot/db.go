@@ -52,7 +52,9 @@ type WebhookEvent struct {
 	bun.BaseModel `bun:"table:webhook_events,alias:we"`
 
 	ID         uint64    `bun:",pk,autoincrement"`
-	EventType  string    `bun:",notnull"`
+	DeliveryID string    `bun:",unique"`            // X-GitHub-Delivery 标头，用于幂等性检查
+	EventType  string    `bun:",notnull"`           // X-GitHub-Event 标头
+	HookID     int64     `bun:""`                   // X-GitHub-Hook-ID 标头
 	Payload    string    `bun:"type:text"`          // 原始 Webhook 负载
 	Status     string    `bun:",default:'pending'"` // pending, processed, failed
 	RetryCount int       `bun:",default:0"`
