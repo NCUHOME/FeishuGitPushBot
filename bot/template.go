@@ -55,8 +55,14 @@ func ParseEvent(event any, eventType string) EventDetail {
 		}
 		repoUrl := e.GetRepo().GetHTMLURL()
 
+		// 跳过 tag 的创建和删除事件，由 CreateEvent/DeleteEvent 处理，避免重复推送
+		if isTag && (e.GetCreated() || e.GetDeleted()) {
+			d.Skip = true
+			return d
+		}
+
 		if isTag {
-			d.Title = fmt.Sprintf("🏷️ New Tag: %s", refShort)
+			d.Title = fmt.Sprintf("🏷️ Tag: %s", refShort)
 			d.RefName = refShort
 			d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repoUrl, refShort)
 			d.URL = d.RefURL
@@ -170,6 +176,10 @@ func ParseEvent(event any, eventType string) EventDetail {
 			} else {
 				d.Title = fmt.Sprintf("🆕 New Branch: %s", refShort)
 			}
+			d.Text = ""
+		} else if isTag {
+			// Tag 推送但没有 commits（可能是已有 tag 的更新）
+			d.Title = fmt.Sprintf("🏷️ Tag: %s", refShort)
 			d.Text = ""
 		}
 		if hc := e.GetHeadCommit(); hc != nil {
@@ -523,6 +533,52 @@ func ParseEvent(event any, eventType string) EventDetail {
 		d.AuthorLogins = []string{e.GetMember().GetLogin()}
 		d.AuthorAvatars = []string{e.GetMember().GetAvatarURL()}
 
+	case *github.ReleaseEvent:
+		action := e.GetAction()
+		release := e.GetRelease()
+		repo := e.GetRepo()
+		d.Action = action
+		d.URL = release.GetHTMLURL()
+
+		switch action {
+		case "published":
+			d.Title = fmt.Sprintf("🚀 Release Published: %s", release.GetName())
+		case "unpublished":
+			d.Title = fmt.Sprintf("🚫 Release Unpublished: %s", release.GetName())
+		case "created":
+			d.Title = fmt.Sprintf("📝 Release Created: %s", release.GetName())
+		case "edited":
+			d.Title = fmt.Sprintf("✏️ Release Edited: %s", release.GetName())
+		case "deleted":
+			d.Title = fmt.Sprintf("🗑️ Release Deleted: %s", release.GetName())
+		case "prereleased":
+			d.Title = fmt.Sprintf("🧪 Pre-release: %s", release.GetName())
+		case "released":
+			d.Title = fmt.Sprintf("🏆 Release: %s", release.GetName())
+		default:
+			d.Title = fmt.Sprintf("📦 Release %s: %s", action, release.GetName())
+		}
+
+		// 构建发布内容
+		var lines []string
+		if tag := release.GetTagName(); tag != "" {
+			d.RefName = tag
+			d.RefURL = fmt.Sprintf("%s/releases/tag/%s", repo.GetHTMLURL(), tag)
+			lines = append(lines, fmt.Sprintf("**Tag:** `%s`", tag))
+		}
+		if author := release.GetAuthor(); author != nil {
+			lines = append(lines, fmt.Sprintf("**Author:** [%s](https://github.com/%s)", author.GetLogin(), author.GetLogin()))
+			d.AuthorLogins = []string{author.GetLogin()}
+			d.AuthorAvatars = []string{author.GetAvatarURL()}
+		}
+		if body := release.GetBody(); body != "" {
+			text, _ := ProcessGithubMarkdown(body)
+			if text != "" {
+				lines = append(lines, "", "**Release Notes:**", text)
+			}
+		}
+		d.Text = strings.Join(lines, "\n")
+
 	case *github.MembershipEvent:
 		d.Title = fmt.Sprintf("👥 Membership %s: %s", e.GetMember().GetLogin(), e.GetAction())
 		d.Text = fmt.Sprintf("Action: **%s**\nMember: **%s**\nScope: **%s**", e.GetAction(), e.GetMember().GetLogin(), e.GetScope())
@@ -571,6 +627,9 @@ func GetTemplate(title string) string {
 	}
 	if ContainsAny(title, "🏷️", "Tag", "New Tag") {
 		return string(cardColorPurple)
+	}
+	if ContainsAny(title, "🚀", "Release", "Pre-release") {
+		return "turquoise"
 	}
 	if ContainsAny(title, "🆕", "New Branch", "New Commits", "commits") {
 		return "wathet"

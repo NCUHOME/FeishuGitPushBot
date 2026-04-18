@@ -127,6 +127,19 @@ func processWebhookEvent(event WebhookEvent) error {
 		githubID = ext(m, "workflow_job", "run_id")
 	case "push":
 		githubID = fmt.Sprintf("push:%s:%s", repo, ref)
+	case "create":
+		// 创建事件：区分 tag 和 branch
+		refType := ext(m, "ref_type")
+		ref := ext(m, "ref")
+		githubID = fmt.Sprintf("create:%s:%s:%s", repo, refType, ref)
+	case "delete":
+		// 删除事件：区分 tag 和 branch
+		refType := ext(m, "ref_type")
+		ref := ext(m, "ref")
+		githubID = fmt.Sprintf("delete:%s:%s:%s", repo, refType, ref)
+	case "release":
+		// release 事件按 tag 区分，支持更新
+		githubID = fmt.Sprintf("release:%s:%s", repo, ext(m, "release", "tag_name"))
 	case "pull_request":
 		githubID = fmt.Sprintf("pr:%s:%s", repo, ext(m, "pull_request", "number"))
 	case "issues":
@@ -145,6 +158,7 @@ func processWebhookEvent(event WebhookEvent) error {
 	}
 
 	// 4. 合并与更新逻辑
+	// 4.1 Workflow 事件：更新同一条 workflow 的消息
 	if (event.EventType == "workflow_run" || event.EventType == "workflow_job") && githubID != "" {
 		var record MessageRecord
 		if err := DB.NewSelect().Model(&record).
@@ -162,7 +176,32 @@ func processWebhookEvent(event WebhookEvent) error {
 		}
 	}
 
-	if event.EventType == "push" && githubID != "" {
+	// 4.2 Release 事件：更新同一个 release 的消息（编辑、正式发布等）
+	if event.EventType == "release" && githubID != "" {
+		var record MessageRecord
+		if err := DB.NewSelect().Model(&record).
+			Where("github_id = ? AND event_type = 'release'", githubID).
+			Order("id DESC").
+			Limit(1).Scan(ctx); err == nil {
+
+			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
+			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
+			buildCancel()
+			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
+				detailJson, _ := json.Marshal(detail)
+				record.Content = string(detailJson)
+				record.CardString = card.String()
+				_, _ = DB.NewUpdate().Model(&record).
+					Column("content", "card_string").
+					WherePK().Exec(ctx)
+				slog.Info("Release card asynchronously updated", "github_id", githubID)
+				return nil
+			}
+		}
+	}
+
+	// 只合并分支推送（非 tag 推送），且需要有实际内容
+	if event.EventType == "push" && githubID != "" && !detail.IsTag && detail.Text != "" {
 		var record MessageRecord
 		if err := DB.NewSelect().Model(&record).
 			Where("github_id = ? AND updated_at > ?", githubID, time.Now().Add(-5*time.Minute)).
