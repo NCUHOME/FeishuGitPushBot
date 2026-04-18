@@ -401,39 +401,56 @@ func (c *Card) AddCollapsiblePanel(title, content string) {
 	})
 }
 
-// AddActions 添加操作按钮（V2 规范：作为交互模块放入 body.elements 中）
+// AddActions 添加操作按钮 (V2 规范：不再使用 action 模块，直接放入 body.elements 或使用 column_set)
 func (c *Card) AddActions(layout string, buttons ...ActionButton) {
 	if len(buttons) == 0 {
 		return
 	}
 
-	actionElements := make([]any, 0, len(buttons))
-	for i, b := range buttons {
-		btn := map[string]any{
-			"tag":        "button",
-			"element_id": fmt.Sprintf("btn_%d_%d", time.Now().Unix(), i),
-			"text":       map[string]string{"tag": "plain_text", "content": b.Text},
-			"type":       b.Type,
-		}
-		if b.URL != "" {
-			btn["multi_url"] = map[string]any{
-				"url":        b.URL,
-				"pc_url":     "",
-				"android_url": "",
-				"ios_url":    "",
-			}
-		}
-		if b.Disabled {
-			btn["disabled"] = true
-		}
-		actionElements = append(actionElements, btn)
+	// 只有一个按钮，直接作为独立组件添加
+	if len(buttons) == 1 {
+		c.Body.Elements = append(c.Body.Elements, buttons[0].ToMap(0))
+		return
 	}
 
-	c.Body.Elements = append(c.Body.Elements, map[string]any{
-		"tag":     "action",
-		"actions": actionElements,
-		"layout":  layout,
-	})
+	// 多个按钮，使用 column_set 实现横向排列，以对齐 V1 的布局感
+	columns := make([]any, 0, len(buttons))
+	for i, b := range buttons {
+		// 使用等宽布局
+		columns = append(columns, NewColumn("weighted", 1, "center", b.ToMap(i)))
+	}
+
+	// V2 column_set 推荐使用 flex_mode 控制自适应
+	flexMode := "flow"
+	if len(buttons) == 2 {
+		flexMode = "bisect" // 均分
+	} else if len(buttons) == 3 {
+		flexMode = "trisect"
+	}
+
+	c.AddColumnSet(flexMode, "default", columns...)
+}
+
+// ToMap 将 ActionButton 转换为 V2 规范的 button 组件 map
+func (b *ActionButton) ToMap(index int) map[string]any {
+	btn := map[string]any{
+		"tag":        "button",
+		"element_id": fmt.Sprintf("btn_%d_%d", time.Now().Unix(), index),
+		"text":       map[string]string{"tag": "plain_text", "content": b.Text},
+		"type":       b.Type,
+	}
+	if b.URL != "" {
+		btn["multi_url"] = map[string]any{
+			"url":         b.URL,
+			"pc_url":      "",
+			"android_url": "",
+			"ios_url":     "",
+		}
+	}
+	if b.Disabled {
+		btn["disabled"] = true
+	}
+	return btn
 }
 
 // ActionButton 按钮描述
