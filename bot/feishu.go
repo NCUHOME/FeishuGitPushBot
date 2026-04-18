@@ -303,6 +303,8 @@ type Card struct {
 	Config *CardConfig `json:"config,omitempty"`
 	Header *CardHeader `json:"header,omitempty"`
 	Body   *CardBody   `json:"body,omitempty"`
+	// V2 规范：actions 放在根级别，不是 body.elements 内
+	Actions []any `json:"actions,omitempty"`
 }
 
 // CardConfig 卡片全局配置
@@ -401,16 +403,11 @@ func (c *Card) AddCollapsiblePanel(title, content string) {
 	})
 }
 
-// AddActions 添加操作按钮容器（V2 规范：按钮必须放在 actions 容器内）
-// layout 可为 "bisected"、"trisection"、"flow"（默认 flow）
+// AddActions 添加操作按钮（V2 规范：按钮直接放在根级别的 actions 数组中）
 func (c *Card) AddActions(layout string, buttons ...ActionButton) {
 	if len(buttons) == 0 {
 		return
 	}
-	if layout == "" {
-		layout = "flow"
-	}
-	actions := make([]any, 0, len(buttons))
 	for _, b := range buttons {
 		btn := map[string]any{
 			"tag":  "button",
@@ -423,13 +420,8 @@ func (c *Card) AddActions(layout string, buttons ...ActionButton) {
 		if b.Disabled {
 			btn["disabled"] = true
 		}
-		actions = append(actions, btn)
+		c.Actions = append(c.Actions, btn)
 	}
-	c.Body.Elements = append(c.Body.Elements, map[string]any{
-		"tag":     "action",
-		"layout":  layout,
-		"actions": actions,
-	})
 }
 
 // ActionButton 按钮描述
