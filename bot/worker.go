@@ -105,11 +105,9 @@ func processWebhookEvent(event WebhookEvent) error {
 	// 检查是否为 Bot 用户
 	isBotUser := false
 	if C.Github.BotUsers != "" && sender != "" {
-		for _, u := range strings.Split(C.Github.BotUsers, ",") {
-			if strings.TrimSpace(u) == sender {
-				isBotUser = true
-				break
-			}
+		// 简单的缓存或直接字符串包含检查即可，不需要每次都 Split
+		if strings.Contains(","+C.Github.BotUsers+",", ","+sender+",") {
+			isBotUser = true
 		}
 	}
 	// Bot 用户只处理 PR 和 Comment 事件，其他一律跳过
@@ -145,10 +143,10 @@ func processWebhookEvent(event WebhookEvent) error {
 	var githubID string
 	switch event.EventType {
 	case "workflow_run":
-		githubID = "wr:" + ext(m, "workflow_run", "id")
+		githubID = "wf:" + ext(m, "workflow_run", "id")
 	case "workflow_job":
-		// 使用 job 自己的 id，而不是 run_id，这样每个 job 都有独立的通知
-		githubID = "wj:" + ext(m, "workflow_job", "id")
+		// 统一使用 Run ID 追踪，确保 Job 的进度能更新 Run 的消息
+		githubID = "wf:" + ext(m, "workflow_job", "run_id")
 	case "push":
 		githubID = fmt.Sprintf("push:%s:%s", repo, ref)
 	case "create":
@@ -182,23 +180,10 @@ func processWebhookEvent(event WebhookEvent) error {
 	// 4.1 Workflow 事件：更新同一条 workflow 的消息，支持超时提醒
 	if (event.EventType == "workflow_run" || event.EventType == "workflow_job") && githubID != "" {
 		var record MessageRecord
-		rawID := strings.TrimPrefix(strings.TrimPrefix(githubID, "wr:"), "wj:")
 		err := DB.NewSelect().Model(&record).
-			Where("github_id = ? OR github_id = ?", githubID, rawID).
+			Where("github_id = ?", githubID).
 			Order("id DESC").
 			Limit(1).Scan(ctx)
-
-		// 如果没找到对应的 workflow 记录，尝试寻找对应的 push 记录进行“合并更新”
-		isFirstWorkflowEvent := false
-		if err != nil && shortSHA != "" {
-			err = DB.NewSelect().Model(&record).
-				Where("repo_name = ? AND event_type = 'push' AND content LIKE ?", repo, "%"+shortSHA+"%").
-				Order("id DESC").Limit(1).Scan(ctx)
-			if err == nil {
-				isFirstWorkflowEvent = true
-				slog.Info("Matching push record found for workflow", "sha", shortSHA, "msg_id", record.FeishuMessageID)
-			}
-		}
 
 		if err == nil {
 			// 获取当前状态
@@ -211,6 +196,9 @@ func processWebhookEvent(event WebhookEvent) error {
 				status = ext(m, "workflow_job", "status")
 				conclusion = ext(m, "workflow_job", "conclusion")
 			}
+			// 保存当前状态供后面使用
+			curStatus := status
+			curConclusion := conclusion
 
 			// 检查是否需要超时提醒（运行中且超过10分钟）
 			needTimeoutNotify := false
@@ -246,44 +234,17 @@ func processWebhookEvent(event WebhookEvent) error {
 
 			// 正常更新原消息
 			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
-			var card *Card
-			if isFirstWorkflowEvent {
-				// 如果是合并到 push 消息，我们需要保持 push 的内容，但更新标题
-				var pushDetail EventDetail
-				_ = json.Unmarshal([]byte(record.Content), &pushDetail)
-				// 替换标题为 Workflow 状态 + 原标题
-				pushDetail.Title = detail.Title
-				card = BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, pushDetail)
-			} else {
-				card = BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
-			}
+			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
 			buildCancel()
 
 			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
 				// 更新数据库中的内容，防止后续操作（如刷新图片）使用旧数据
 				detailJson, _ := json.Marshal(detail)
-				if isFirstWorkflowEvent {
-					// 如果是第一次合并，我们需要为这个 workflow_run 创建一个新记录，指向同一个消息 ID
-					// 这样后续的 in_progress/completed 就能直接找到这条记录进行更新
-					_, _ = DB.NewInsert().Model(&MessageRecord{
-						GithubID:          githubID,
-						FeishuMessageID:   record.FeishuMessageID,
-						ChatID:            record.ChatID,
-						RepoName:          repo,
-						Ref:               ref,
-						EventType:         event.EventType,
-						Content:           string(detailJson),
-						CardString:        card.String(),
-						EventID:           event.ID,
-						WorkflowStartedAt: time.Now(),
-					}).Exec(ctx)
-				} else {
-					_, _ = DB.NewUpdate().Model(&record).
-						Set("content = ?", string(detailJson)).
-						Set("card_string = ?", card.String()).
-						Set("updated_at = ?", time.Now()).
-						WherePK().Exec(ctx)
-				}
+				_, _ = DB.NewUpdate().Model(&record).
+					Set("content = ?", string(detailJson)).
+					Set("card_string = ?", card.String()).
+					Set("updated_at = ?", time.Now()).
+					WherePK().Exec(ctx)
 
 				slog.Info("Workflow card updated", "github_id", githubID, "event_type", event.EventType)
 				return nil
@@ -360,7 +321,11 @@ func processWebhookEvent(event WebhookEvent) error {
 		if commitId != "" {
 			var record MessageRecord
 			// 始终按 ID 升序取第一条 (Root message)
-			if err := DB.NewSelect().Model(&record).Where("github_id LIKE ?", "%"+commitId+"%").Order("id ASC").Limit(1).Scan(ctx); err == nil {
+			// 优化：增加对 push 记录 content 的模糊匹配，因为 push 记录的 github_id 不含 SHA
+			if err := DB.NewSelect().Model(&record).
+				Where("github_id LIKE ? OR (event_type = 'push' AND repo_name = ? AND content LIKE ?)",
+					"%"+commitId+"%", repo, "%"+commitId+"%").
+				Order("id ASC").Limit(1).Scan(ctx); err == nil {
 				parentID = record.FeishuMessageID
 			}
 		}
@@ -461,16 +426,14 @@ func processWebhookEvent(event WebhookEvent) error {
 		// Workflow 事件：记录开始时间
 		workflowStartedAt := time.Time{}
 		if event.EventType == "workflow_run" || event.EventType == "workflow_job" {
-			status := ""
-			conclusion := ""
-			if event.EventType == "workflow_run" {
-				status = ext(m, "workflow_run", "status")
-				conclusion = ext(m, "workflow_run", "conclusion")
-			} else {
+			// 如果在上面的更新逻辑中已经提取过了，就直接用；否则重新提取
+			status := ext(m, event.EventType, "status")
+			conclusion := ext(m, event.EventType, "conclusion")
+			if event.EventType == "workflow_job" {
 				status = ext(m, "workflow_job", "status")
 				conclusion = ext(m, "workflow_job", "conclusion")
 			}
-			// 只有在运行中且无结论时才记录开始时间
+
 			if status == "in_progress" && conclusion == "" {
 				workflowStartedAt = time.Now()
 			}
