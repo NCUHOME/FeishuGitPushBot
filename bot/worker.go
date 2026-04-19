@@ -129,10 +129,10 @@ func processWebhookEvent(event WebhookEvent) error {
 	var githubID string
 	switch event.EventType {
 	case "workflow_run":
-		githubID = ext(m, "workflow_run", "id")
+		githubID = "wr:" + ext(m, "workflow_run", "id")
 	case "workflow_job":
 		// 使用 job 自己的 id，而不是 run_id，这样每个 job 都有独立的通知
-		githubID = ext(m, "workflow_job", "id")
+		githubID = "wj:" + ext(m, "workflow_job", "id")
 	case "push":
 		githubID = fmt.Sprintf("push:%s:%s", repo, ref)
 	case "create":
@@ -169,8 +169,11 @@ func processWebhookEvent(event WebhookEvent) error {
 	// 4.1 Workflow 事件：更新同一条 workflow 的消息，支持超时提醒
 	if (event.EventType == "workflow_run" || event.EventType == "workflow_job") && githubID != "" {
 		var record MessageRecord
+		// 稍微宽松一点，只匹配 github_id，因为 run/job ID 在 GitHub 是全局唯一的
+		// 增加对旧版非前缀 ID 的兼容匹配
+		rawID := strings.TrimPrefix(strings.TrimPrefix(githubID, "wr:"), "wj:")
 		if err := DB.NewSelect().Model(&record).
-			Where("github_id = ? AND event_type = ?", githubID, event.EventType).
+			Where("github_id = ? OR github_id = ?", githubID, rawID).
 			Order("id DESC").
 			Limit(1).Scan(ctx); err == nil {
 
@@ -222,6 +225,14 @@ func processWebhookEvent(event WebhookEvent) error {
 			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
 			buildCancel()
 			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
+				// 更新数据库中的内容，防止后续操作（如刷新图片）使用旧数据
+				detailJson, _ := json.Marshal(detail)
+				_, _ = DB.NewUpdate().Model(&record).
+					Set("content = ?", string(detailJson)).
+					Set("card_string = ?", card.String()).
+					Set("updated_at = ?", time.Now()).
+					WherePK().Exec(ctx)
+
 				slog.Info("Workflow card updated", "github_id", githubID, "event_type", event.EventType)
 				return nil
 			}
@@ -279,21 +290,29 @@ func processWebhookEvent(event WebhookEvent) error {
 
 	// 5. 查找父级 ID (回复逻辑)
 	var parentID string
-	// 改为：只要是 Issue/PR 相关的非“创建”事件，都尝试寻找父消息进行话题回复
-	isIssueOrPR := event.EventType == "issue_comment" ||
+	// 改为：只要是 Issue/PR/Workflow 相关的非“创建”事件，都尝试寻找父消息进行话题回复
+	isInteraction := event.EventType == "issue_comment" ||
 		event.EventType == "pull_request_review_comment" ||
 		event.EventType == "pull_request_review" ||
 		event.EventType == "pull_request" ||
-		event.EventType == "issues"
+		event.EventType == "issues" ||
+		event.EventType == "workflow_run" ||
+		event.EventType == "workflow_job"
 
 	action := ext(m, "action")
-	if isIssueOrPR && action != "opened" {
+	if isInteraction && action != "opened" {
 		commitId := ext(m, "comment", "commit_id")
 		if commitId == "" {
 			commitId = ext(m, "pull_request", "head", "sha")
 		}
 		if commitId == "" {
 			commitId = ext(m, "review", "commit_id")
+		}
+		if commitId == "" {
+			commitId = ext(m, "workflow_run", "head_sha")
+		}
+		if commitId == "" {
+			commitId = ext(m, "workflow_job", "head_sha")
 		}
 		if commitId != "" {
 			var record MessageRecord
