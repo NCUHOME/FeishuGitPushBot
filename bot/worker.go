@@ -134,9 +134,11 @@ func processWebhookEvent(event WebhookEvent) error {
 	if sha == "" {
 		sha = ext(m, "workflow_job", "head_sha")
 	}
-	shortSHA := sha
-	if len(sha) > 7 {
-		shortSHA = sha[:7]
+	if sha == "" {
+		sha = ext(m, "check_run", "head_sha")
+	}
+	if sha == "" {
+		sha = ext(m, "check_suite", "head_sha")
 	}
 
 	// 3. 构建追踪 ID
@@ -147,6 +149,11 @@ func processWebhookEvent(event WebhookEvent) error {
 	case "workflow_job":
 		// 统一使用 Run ID 追踪，确保 Job 的进度能更新 Run 的消息
 		githubID = "wf:" + ext(m, "workflow_job", "run_id")
+	case "check_run":
+		// 使用 check_suite.id 进行统一追踪
+		githubID = "wf:" + ext(m, "check_run", "check_suite", "id")
+	case "check_suite":
+		githubID = "wf:" + ext(m, "check_suite", "id")
 	case "push":
 		githubID = fmt.Sprintf("push:%s:%s", repo, ref)
 	case "create":
@@ -177,8 +184,13 @@ func processWebhookEvent(event WebhookEvent) error {
 	}
 
 	// 4. 合并与更新逻辑
-	// 4.1 Workflow 事件：更新同一条 workflow 的消息，支持超时提醒
-	if (event.EventType == "workflow_run" || event.EventType == "workflow_job") && githubID != "" {
+	// 4.1 CI/CD 事件 (Workflow, Check Run)：更新同一条消息，支持超时提醒
+	isCIEvent := event.EventType == "workflow_run" ||
+		event.EventType == "workflow_job" ||
+		event.EventType == "check_run" ||
+		event.EventType == "check_suite"
+
+	if isCIEvent && githubID != "" {
 		var record MessageRecord
 		err := DB.NewSelect().Model(&record).
 			Where("github_id = ?", githubID).
@@ -192,13 +204,16 @@ func processWebhookEvent(event WebhookEvent) error {
 			if event.EventType == "workflow_run" {
 				status = ext(m, "workflow_run", "status")
 				conclusion = ext(m, "workflow_run", "conclusion")
-			} else {
+			} else if event.EventType == "workflow_job" {
 				status = ext(m, "workflow_job", "status")
 				conclusion = ext(m, "workflow_job", "conclusion")
+			} else if event.EventType == "check_run" {
+				status = ext(m, "check_run", "status")
+				conclusion = ext(m, "check_run", "conclusion")
+			} else if event.EventType == "check_suite" {
+				status = ext(m, "check_suite", "status")
+				conclusion = ext(m, "check_suite", "conclusion")
 			}
-			// 保存当前状态供后面使用
-			curStatus := status
-			curConclusion := conclusion
 
 			// 检查是否需要超时提醒（运行中且超过10分钟）
 			needTimeoutNotify := false
@@ -313,7 +328,9 @@ func processWebhookEvent(event WebhookEvent) error {
 		event.EventType == "pull_request" ||
 		event.EventType == "issues" ||
 		event.EventType == "workflow_run" ||
-		event.EventType == "workflow_job"
+		event.EventType == "workflow_job" ||
+		event.EventType == "check_run" ||
+		event.EventType == "check_suite"
 
 	action := ext(m, "action")
 	if isInteraction && action != "opened" {
@@ -423,15 +440,21 @@ func processWebhookEvent(event WebhookEvent) error {
 	if githubID != "" && msgID != "" {
 		detailJson, _ := json.Marshal(detail)
 
-		// Workflow 事件：记录开始时间
+		// CI 事件：记录开始时间
 		workflowStartedAt := time.Time{}
-		if event.EventType == "workflow_run" || event.EventType == "workflow_job" {
+		if isCIEvent {
 			// 如果在上面的更新逻辑中已经提取过了，就直接用；否则重新提取
 			status := ext(m, event.EventType, "status")
 			conclusion := ext(m, event.EventType, "conclusion")
 			if event.EventType == "workflow_job" {
 				status = ext(m, "workflow_job", "status")
 				conclusion = ext(m, "workflow_job", "conclusion")
+			} else if event.EventType == "check_run" {
+				status = ext(m, "check_run", "status")
+				conclusion = ext(m, "check_run", "conclusion")
+			} else if event.EventType == "check_suite" {
+				status = ext(m, "check_suite", "status")
+				conclusion = ext(m, "check_suite", "conclusion")
 			}
 
 			if status == "in_progress" && conclusion == "" {

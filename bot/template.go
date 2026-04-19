@@ -498,6 +498,79 @@ func ParseEvent(event any, eventType string) EventDetail {
 		}
 		d.URL = wj.GetHTMLURL()
 
+	case *github.CheckRunEvent:
+		cr := e.GetCheckRun()
+		if cr == nil {
+			d.Skip = true
+			return d
+		}
+		status := cr.GetStatus()
+		conclusion := cr.GetConclusion()
+		name := cr.GetName()
+		sha := cr.GetHeadSHA()
+		shortSHA := sha
+		if len(sha) > 7 {
+			shortSHA = sha[:7]
+		}
+		d.SHA = shortSHA
+
+		icon := "⚙️"
+		stateVerb := "started"
+		switch conclusion {
+		case "success":
+			icon = "✅"
+			stateVerb = "succeeded"
+		case "failure", "cancelled", "timed_out":
+			icon = "❌"
+			stateVerb = conclusion
+		default:
+			if status == "in_progress" {
+				icon = "⏳"
+				stateVerb = "running"
+			}
+		}
+
+		d.Title = fmt.Sprintf("%s Check: %s", icon, name)
+		d.Text = fmt.Sprintf("%s check **%s** %s", icon, name, stateVerb)
+		d.URL = cr.GetHTMLURL()
+		d.RefName = e.GetCheckRun().GetCheckSuite().GetHeadBranch()
+
+	case *github.CheckSuiteEvent:
+		cs := e.GetCheckSuite()
+		if cs == nil {
+			d.Skip = true
+			return d
+		}
+		status := cs.GetStatus()
+		conclusion := cs.GetConclusion()
+		sha := cs.GetHeadSHA()
+		shortSHA := sha
+		if len(sha) > 7 {
+			shortSHA = sha[:7]
+		}
+		d.SHA = shortSHA
+
+		icon := "⚙️"
+		stateVerb := "started"
+		switch conclusion {
+		case "success":
+			icon = "✅"
+			stateVerb = "succeeded"
+		case "failure", "cancelled", "timed_out":
+			icon = "❌"
+			stateVerb = conclusion
+		default:
+			if status == "in_progress" {
+				icon = "⏳"
+				stateVerb = "running"
+			}
+		}
+
+		d.Title = fmt.Sprintf("%s Check Suite %s", icon, titleCase(stateVerb))
+		d.Text = fmt.Sprintf("%s check suite %s", icon, stateVerb)
+		d.URL = "" // CheckSuite does not have a direct HTMLURL field in go-github
+		d.RefName = cs.GetHeadBranch()
+
 	case *github.WatchEvent:
 		d.Title = "⭐ New Star!"
 		d.Text = "Your repository has a new follower."
