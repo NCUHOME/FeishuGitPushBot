@@ -125,6 +125,22 @@ func processWebhookEvent(event WebhookEvent) error {
 		}
 	}
 
+	// 2.1 提取 SHA (用于后续寻找父消息或更新原本的推送)
+	sha := ext(m, "head_commit", "id")
+	if sha == "" {
+		sha = ext(m, "pull_request", "head", "sha")
+	}
+	if sha == "" {
+		sha = ext(m, "workflow_run", "head_sha")
+	}
+	if sha == "" {
+		sha = ext(m, "workflow_job", "head_sha")
+	}
+	shortSHA := sha
+	if len(sha) > 7 {
+		shortSHA = sha[:7]
+	}
+
 	// 3. 构建追踪 ID
 	var githubID string
 	switch event.EventType {
@@ -153,10 +169,7 @@ func processWebhookEvent(event WebhookEvent) error {
 	case "issues":
 		githubID = fmt.Sprintf("issue:%s:%s", repo, ext(m, "issue", "number"))
 	default:
-		githubID = ext(m, "head_commit", "id")
-		if githubID == "" {
-			githubID = ext(m, "pull_request", "head", "sha")
-		}
+		githubID = sha
 		if githubID == "" {
 			issueNum := ext(m, "issue", "number")
 			if issueNum != "" {
@@ -169,14 +182,25 @@ func processWebhookEvent(event WebhookEvent) error {
 	// 4.1 Workflow 事件：更新同一条 workflow 的消息，支持超时提醒
 	if (event.EventType == "workflow_run" || event.EventType == "workflow_job") && githubID != "" {
 		var record MessageRecord
-		// 稍微宽松一点，只匹配 github_id，因为 run/job ID 在 GitHub 是全局唯一的
-		// 增加对旧版非前缀 ID 的兼容匹配
 		rawID := strings.TrimPrefix(strings.TrimPrefix(githubID, "wr:"), "wj:")
-		if err := DB.NewSelect().Model(&record).
+		err := DB.NewSelect().Model(&record).
 			Where("github_id = ? OR github_id = ?", githubID, rawID).
 			Order("id DESC").
-			Limit(1).Scan(ctx); err == nil {
+			Limit(1).Scan(ctx)
 
+		// 如果没找到对应的 workflow 记录，尝试寻找对应的 push 记录进行“合并更新”
+		isFirstWorkflowEvent := false
+		if err != nil && shortSHA != "" {
+			err = DB.NewSelect().Model(&record).
+				Where("repo_name = ? AND event_type = 'push' AND content LIKE ?", repo, "%"+shortSHA+"%").
+				Order("id DESC").Limit(1).Scan(ctx)
+			if err == nil {
+				isFirstWorkflowEvent = true
+				slog.Info("Matching push record found for workflow", "sha", shortSHA, "msg_id", record.FeishuMessageID)
+			}
+		}
+
+		if err == nil {
 			// 获取当前状态
 			status := ""
 			conclusion := ""
@@ -222,19 +246,50 @@ func processWebhookEvent(event WebhookEvent) error {
 
 			// 正常更新原消息
 			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
-			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
+			var card *Card
+			if isFirstWorkflowEvent {
+				// 如果是合并到 push 消息，我们需要保持 push 的内容，但更新标题
+				var pushDetail EventDetail
+				_ = json.Unmarshal([]byte(record.Content), &pushDetail)
+				// 替换标题为 Workflow 状态 + 原标题
+				pushDetail.Title = detail.Title
+				card = BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, pushDetail)
+			} else {
+				card = BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
+			}
 			buildCancel()
+
 			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
 				// 更新数据库中的内容，防止后续操作（如刷新图片）使用旧数据
 				detailJson, _ := json.Marshal(detail)
-				_, _ = DB.NewUpdate().Model(&record).
-					Set("content = ?", string(detailJson)).
-					Set("card_string = ?", card.String()).
-					Set("updated_at = ?", time.Now()).
-					WherePK().Exec(ctx)
+				if isFirstWorkflowEvent {
+					// 如果是第一次合并，我们需要为这个 workflow_run 创建一个新记录，指向同一个消息 ID
+					// 这样后续的 in_progress/completed 就能直接找到这条记录进行更新
+					_, _ = DB.NewInsert().Model(&MessageRecord{
+						GithubID:          githubID,
+						FeishuMessageID:   record.FeishuMessageID,
+						ChatID:            record.ChatID,
+						RepoName:          repo,
+						Ref:               ref,
+						EventType:         event.EventType,
+						Content:           string(detailJson),
+						CardString:        card.String(),
+						EventID:           event.ID,
+						WorkflowStartedAt: time.Now(),
+					}).Exec(ctx)
+				} else {
+					_, _ = DB.NewUpdate().Model(&record).
+						Set("content = ?", string(detailJson)).
+						Set("card_string = ?", card.String()).
+						Set("updated_at = ?", time.Now()).
+						WherePK().Exec(ctx)
+				}
 
 				slog.Info("Workflow card updated", "github_id", githubID, "event_type", event.EventType)
 				return nil
+			} else {
+				// 如果更新失败，记录错误并返回，不要继续往下走去发新消息
+				return fmt.Errorf("failed to update message: %w", err)
 			}
 		}
 	}
@@ -301,19 +356,7 @@ func processWebhookEvent(event WebhookEvent) error {
 
 	action := ext(m, "action")
 	if isInteraction && action != "opened" {
-		commitId := ext(m, "comment", "commit_id")
-		if commitId == "" {
-			commitId = ext(m, "pull_request", "head", "sha")
-		}
-		if commitId == "" {
-			commitId = ext(m, "review", "commit_id")
-		}
-		if commitId == "" {
-			commitId = ext(m, "workflow_run", "head_sha")
-		}
-		if commitId == "" {
-			commitId = ext(m, "workflow_job", "head_sha")
-		}
+		commitId := sha // 使用已经提取好的 sha
 		if commitId != "" {
 			var record MessageRecord
 			// 始终按 ID 升序取第一条 (Root message)
