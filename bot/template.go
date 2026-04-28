@@ -136,17 +136,17 @@ func ParseEvent(event any, eventType string) EventDetail {
 					hashPart = fmt.Sprintf(" ([%s](%s))", shortSHA, c.GetURL())
 				}
 
-			authorPart := ""
-			if multiAuthor {
-				login := ""
-				name := ""
-				if author := c.GetAuthor(); author != nil {
-					login = author.GetLogin()
-					name = author.GetName()
-				}
-				if name == "" {
-					name = login
-				}
+				authorPart := ""
+				if multiAuthor {
+					login := ""
+					name := ""
+					if author := c.GetAuthor(); author != nil {
+						login = author.GetLogin()
+						name = author.GetName()
+					}
+					if name == "" {
+						name = login
+					}
 
 					authorList := []string{}
 					if name != "" {
@@ -288,12 +288,13 @@ func ParseEvent(event any, eventType string) EventDetail {
 		default:
 			d.Title = fmt.Sprintf("🍄 Issue %s", action)
 		}
-		body := SafeText(strings.TrimSpace(iss.GetBody()), 50000)
+		body, foldable := ProcessGithubMarkdown(iss.GetBody())
 		if body != "" {
 			d.Text = fmt.Sprintf("**%s**\n%s", iss.GetTitle(), body)
 		} else {
 			d.Text = fmt.Sprintf("**%s**", iss.GetTitle())
 		}
+		d.FoldableBody = foldable
 		d.URL = iss.GetHTMLURL()
 		d.Action = action
 
@@ -313,7 +314,8 @@ func ParseEvent(event any, eventType string) EventDetail {
 			body = GetDiffOnlyAdded(*e.Changes.Body.From, body)
 		}
 
-		commentBody := SafeText(strings.TrimSpace(body), 50000)
+		commentBody, foldable := ProcessGithubMarkdown(body)
+		d.FoldableBody = foldable
 		if len(commentBody) > 10000 {
 			d.Text = fmt.Sprintf("**%s**\n*(Comment too long, see reply)*", iss.GetTitle())
 			d.ExtraReply = commentBody
@@ -340,7 +342,8 @@ func ParseEvent(event any, eventType string) EventDetail {
 			body = GetDiffOnlyAdded(*e.Changes.Body.From, body)
 		}
 
-		commentBody := SafeText(strings.TrimSpace(body), 50000)
+		commentBody, foldable := ProcessGithubMarkdown(body)
+		d.FoldableBody = foldable
 		if commentBody != "" {
 			d.Text = fmt.Sprintf("**%s**\n%s", pr.GetTitle(), commentBody)
 		} else {
@@ -361,7 +364,8 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 		body := review.GetBody()
 		// PullRequestReviewEvent 在 go-github 中目前没有 Changes 字段
-		reviewBody := SafeText(strings.TrimSpace(body), 50000)
+		reviewBody, foldable := ProcessGithubMarkdown(body)
+		d.FoldableBody = foldable
 		if reviewBody != "" {
 			d.Text = fmt.Sprintf("**%s**\n%s", pr.GetTitle(), reviewBody)
 		} else {
@@ -615,6 +619,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 				d.URL = d.RefURL
 			}
 			d.IsTag = true
+			d.Text = fmt.Sprintf("• 🏷️ %s", ref)
 		} else {
 			// 分支创建通常由 Push 事件处理，这里跳过
 			d.Skip = true
@@ -626,6 +631,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 			d.Title = fmt.Sprintf("🗑️ Tag Deleted: %s", ref)
 			d.RefName = ref
 			d.IsTag = true
+			d.Text = fmt.Sprintf("• 🗑️ %s", ref)
 		} else {
 			d.Skip = true
 		}
@@ -988,10 +994,6 @@ func BuildCard(ctx context.Context, repo, repoUrl, sender, senderUrl, avatarUrl 
 		btns := []ActionButton{
 			{Text: "View Details", URL: detail.URL, Type: btnType},
 		}
-		// 失败时额外提供分支快捷链接
-		if btnType == "danger" && detail.RefURL != "" {
-			btns = append(btns, ActionButton{Text: "View Branch", URL: detail.RefURL, Type: "default"})
-		}
 		card.AddActions("flow", btns...)
 	}
 
@@ -1147,6 +1149,127 @@ func FormatDuration(d time.Duration) string {
 	return strings.Join(parts, " ")
 }
 
+// htmlToMarkdown 将 HTML 内容转换为飞书卡片 markdown 组件支持的纯 markdown 语法。
+// 飞书卡片的 markdown 标签不支持原始 HTML，只支持标准 markdown 语法。
+func htmlToMarkdown(s string) string {
+	// Step 1: 内联标签转换（顺序重要：先处理内层标签）
+	s = convertInlineTags(s)
+
+	// Step 2: 表格转换（单元格内容是已经转换过的 markdown）
+	s = convertHTMLTables(s)
+
+	// Step 3: 块级元素转换
+	s = convertBlockTags(s)
+
+	// Step 4: 移除残留的 HTML 标签
+	s = regexp.MustCompile(`(?s)<[^>]*>`).ReplaceAllString(s, "")
+
+	// Step 5: 清理多余空白
+	s = regexp.MustCompile(`\n{3,}`).ReplaceAllString(s, "\n\n")
+	s = strings.TrimSpace(s)
+
+	return s
+}
+
+var (
+	reBr         = regexp.MustCompile(`(?is)<br\s*/?>`)
+	reStrong     = regexp.MustCompile(`(?is)<(strong|b)\s*>(.*?)</(strong|b)>`)
+	reEm         = regexp.MustCompile(`(?is)<(em|i)\s*>(.*?)</(em|i)>`)
+	reCode       = regexp.MustCompile(`(?is)<code\s*>(.*?)</code>`)
+	reDel        = regexp.MustCompile(`(?is)<(del|s|strike)\s*>(.*?)</(del|s|strike)>`)
+	reA          = regexp.MustCompile(`(?is)<a\s+[^>]*href=["']([^"']*)["'][^>]*>(.*?)</a>`)
+	reImgAltSrc  = regexp.MustCompile(`(?is)<img\s+[^>]*alt=["']([^"']*)["'][^>]*src=["']([^"']*)["'][^>]*/?>`)
+	reImgSrcAlt  = regexp.MustCompile(`(?is)<img\s+[^>]*src=["']([^"']*)["'][^>]*alt=["']([^"']*)["'][^>]*/?>`)
+	reImgSrcOnly = regexp.MustCompile(`(?is)<img\s+[^>]*src=["']([^"']*)["'][^>]*/?>`)
+	reTable      = regexp.MustCompile(`(?is)<table.*?>(.*?)</table>`)
+	reTr         = regexp.MustCompile(`(?is)<tr.*?>(.*?)</tr>`)
+	reTd         = regexp.MustCompile(`(?is)<t[dh].*?>(.*?)</t[dh]>`)
+	reP          = regexp.MustCompile(`(?is)<p\s*>(.*?)</p>`)
+	reHeading    = regexp.MustCompile(`(?is)<h([1-6])\s*>(.*?)</h[1-6]>`)
+	reLi         = regexp.MustCompile(`(?is)<li\s*>(.*?)</li>`)
+	reBq         = regexp.MustCompile(`(?is)<blockquote\s*>(.*?)</blockquote>`)
+	reHr         = regexp.MustCompile(`(?is)<hr\s*/?>`)
+)
+
+func convertInlineTags(s string) string {
+	s = reBr.ReplaceAllString(s, "\n")
+	s = reStrong.ReplaceAllString(s, "**$2**")
+	s = reEm.ReplaceAllString(s, "*$2*")
+	s = reCode.ReplaceAllString(s, "`$1`")
+	s = reDel.ReplaceAllString(s, "~~$2~~")
+	s = reA.ReplaceAllString(s, "[$2]($1)")
+	s = reImgAltSrc.ReplaceAllString(s, "$1")
+	s = reImgSrcAlt.ReplaceAllString(s, "$2")
+	s = reImgSrcOnly.ReplaceAllString(s, "[image]($1)")
+	return s
+}
+
+func convertHTMLTables(s string) string {
+	return reTable.ReplaceAllStringFunc(s, func(match string) string {
+		var rows [][]string
+		for _, trMatch := range reTr.FindAllStringSubmatch(match, -1) {
+			var cells []string
+			for _, tdMatch := range reTd.FindAllStringSubmatch(trMatch[1], -1) {
+				cells = append(cells, strings.TrimSpace(tdMatch[1]))
+			}
+			if len(cells) > 0 {
+				rows = append(rows, cells)
+			}
+		}
+		if len(rows) == 0 {
+			return ""
+		}
+
+		maxCols := 0
+		for _, row := range rows {
+			if len(row) > maxCols {
+				maxCols = len(row)
+			}
+		}
+
+		// 单列表格 → 项目列表
+		if maxCols == 1 {
+			var items []string
+			for _, row := range rows {
+				items = append(items, "• "+row[0])
+			}
+			return strings.Join(items, "\n")
+		}
+
+		// 多列表格 → markdown 表格
+		var lines []string
+		for i, row := range rows {
+			for len(row) < maxCols {
+				row = append(row, "")
+			}
+			lines = append(lines, "| "+strings.Join(row, " | ")+" |")
+			if i == 0 {
+				seps := make([]string, maxCols)
+				for j := range seps {
+					seps[j] = "---"
+				}
+				lines = append(lines, "| "+strings.Join(seps, " | ")+" |")
+			}
+		}
+		return strings.Join(lines, "\n")
+	})
+}
+
+func convertBlockTags(s string) string {
+	s = reP.ReplaceAllString(s, "$1\n\n")
+	s = reHeading.ReplaceAllStringFunc(s, func(m string) string {
+		match := reHeading.FindStringSubmatch(m)
+		if len(match) > 2 {
+			return "\n**" + strings.TrimSpace(match[2]) + "**\n"
+		}
+		return m
+	})
+	s = reLi.ReplaceAllString(s, "- $1\n")
+	s = reBq.ReplaceAllString(s, "> $1")
+	s = reHr.ReplaceAllString(s, "\n---\n")
+	return s
+}
+
 // ProcessGithubMarkdown 转换 GitHub Markdown 为飞书卡片 Markdown，并提取折叠内容
 func ProcessGithubMarkdown(s string) (text string, foldable string) {
 	if s == "" {
@@ -1156,34 +1279,30 @@ func ProcessGithubMarkdown(s string) (text string, foldable string) {
 	// 1. 预处理 Mermaid
 	s = strings.ReplaceAll(s, "```mermaid", "```")
 
-	// 2. 更加鲁棒地提取 <details> <summary> 内容 (支持属性如 <details open>)
+	// 2. 提取 <details> <summary> 折叠内容
 	reDetails := regexp.MustCompile(`(?is)<details.*?>\s*<summary.*?>(.*?)</summary>(.*?)</details>`)
 	var foldables []string
 
-	// 提取并替换
 	processed := reDetails.ReplaceAllStringFunc(s, func(m string) string {
 		match := reDetails.FindStringSubmatch(m)
 		if len(match) > 2 {
 			title := strings.TrimSpace(match[1])
-			// 移除 HTML 标签，只保留纯文本作为标题
-			title = regexp.MustCompile(`(?s)<.*?>`).ReplaceAllString(title, "")
+			title = regexp.MustCompile(`(?s)<[^>]*>`).ReplaceAllString(title, "")
 
 			content := strings.TrimSpace(match[2])
-			// 移除内容中的所有 HTML 标签 (如 table, tr, td, br 等)
-			content = regexp.MustCompile(`(?s)<.*?>`).ReplaceAllString(content, "")
-			// 压缩多余换行
+			content = htmlToMarkdown(content)
 			content = regexp.MustCompile(`\n{3,}`).ReplaceAllString(content, "\n\n")
 
 			foldables = append(foldables, fmt.Sprintf("**%s**\n%s", title, strings.TrimSpace(content)))
 		}
-		return "" // 从主文档移除
+		return ""
 	})
 
-	// 3. 移除主体中可能残留的所有 HTML 标签
-	processed = regexp.MustCompile(`(?s)<.*?>`).ReplaceAllString(processed, "")
+	// 3. HTML 转 Markdown
+	processed = htmlToMarkdown(processed)
 	processed = strings.TrimSpace(processed)
 
-	// 4. 安全阶段 (截断长度及最终清洗)
+	// 4. 安全截断
 	text = SafeText(processed, 50000)
 	foldable = SafeText(strings.Join(foldables, "\n\n"), 50000)
 

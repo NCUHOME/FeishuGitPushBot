@@ -319,6 +319,66 @@ func processWebhookEvent(event WebhookEvent) error {
 		}
 	}
 
+	// 4.3 删除标签事件：合并同一仓库短时间内的多次标签删除
+	if event.EventType == "delete" && githubID != "" && detail.IsTag {
+		var record MessageRecord
+		if err := DB.NewSelect().Model(&record).
+			Where("github_id LIKE ? AND updated_at > ?",
+				fmt.Sprintf("delete:%s:tag:%%", repo),
+				time.Now().Add(-5*time.Minute)).
+			Order("id DESC").
+			Limit(1).Scan(ctx); err == nil {
+
+			var prevDetail EventDetail
+			_ = json.Unmarshal([]byte(record.Content), &prevDetail)
+			if prevDetail.Text != "" {
+				detail.Text = prevDetail.Text + "\n" + detail.Text
+			}
+			detail.Title = "🗑️ Tags Deleted (Merged)"
+
+			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
+			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
+			buildCancel()
+			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
+				detailJson, _ := json.Marshal(detail)
+				record.Content = string(detailJson)
+				_, _ = DB.NewUpdate().Model(&record).Column("content").WherePK().Exec(ctx)
+				slog.Info("Tag deletions merged", "github_id", record.GithubID, "repo", repo)
+				return nil
+			}
+		}
+	}
+
+	// 4.4 创建标签事件：合并同一仓库短时间内的多次标签创建
+	if event.EventType == "create" && githubID != "" && detail.IsTag {
+		var record MessageRecord
+		if err := DB.NewSelect().Model(&record).
+			Where("github_id LIKE ? AND updated_at > ?",
+				fmt.Sprintf("create:%s:tag:%%", repo),
+				time.Now().Add(-5*time.Minute)).
+			Order("id DESC").
+			Limit(1).Scan(ctx); err == nil {
+
+			var prevDetail EventDetail
+			_ = json.Unmarshal([]byte(record.Content), &prevDetail)
+			if prevDetail.Text != "" {
+				detail.Text = prevDetail.Text + "\n" + detail.Text
+			}
+			detail.Title = "🏷️ New Tags (Merged)"
+
+			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
+			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
+			buildCancel()
+			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
+				detailJson, _ := json.Marshal(detail)
+				record.Content = string(detailJson)
+				_, _ = DB.NewUpdate().Model(&record).Column("content").WherePK().Exec(ctx)
+				slog.Info("Tag creations merged", "github_id", record.GithubID, "repo", repo)
+				return nil
+			}
+		}
+	}
+
 	// 5. 查找父级 ID (回复逻辑)
 	var parentID string
 	// 改为：只要是 Issue/PR/Workflow 相关的非“创建”事件，都尝试寻找父消息进行话题回复
