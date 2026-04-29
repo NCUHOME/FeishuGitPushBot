@@ -36,11 +36,6 @@ func ParseEvent(event any, eventType string) EventDetail {
 		Skip:  false, // 默认不跳过任何事件
 	}
 
-	// 屏蔽已知无实质内容的冗余事件类型 (可选)
-	if eventType == "member" {
-		// d.Skip = true
-	}
-
 	switch e := event.(type) {
 	case *github.PushEvent:
 		ref := e.GetRef()

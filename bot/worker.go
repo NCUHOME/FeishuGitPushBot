@@ -7,9 +7,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/go-github/v84/github"
 	"strings"
 	"sync"
+
+	"github.com/google/go-github/v84/github"
 )
 
 // StartWorker 启动消息队列处理工作者和图片刷新任务
@@ -67,6 +68,105 @@ func messageWorker() {
 
 		// 推送间隔，保证节奏
 		time.Sleep(1 * time.Second)
+	}
+}
+
+// getMergeWindow 返回配置的事件合并窗口时长
+func getMergeWindow() time.Duration {
+	return time.Duration(C.Events.MergeWindow) * time.Minute
+}
+
+// mergeSearch 定义查找已有消息记录的搜索条件
+// githubID 和 githubIDLike 为 OR 关系，eventType 和 withinWindow 为 AND 关系
+type mergeSearch struct {
+	githubID     string // github_id 精确匹配
+	githubIDLike string // github_id LIKE 模式匹配
+	eventType    string // event_type 精确匹配（空值表示不筛选）
+	withinWindow bool   // 是否应用合并窗口时间过滤
+}
+
+// tryMergeWithExisting 尝试查找已有消息记录并合并/更新
+// search: 搜索条件
+// mergeFn: 合并策略，参数 (old, new *EventDetail)，可就地修改 new
+// 返回 (merged bool, err error)，merged=true 时调用方应立即返回
+func tryMergeWithExisting(
+	ctx context.Context,
+	search mergeSearch,
+	mergeFn func(old, new *EventDetail),
+	detail *EventDetail,
+	repo, repoUrl, sender, senderUrl, avatarUrl, logMsg string,
+) (bool, error) {
+	var record MessageRecord
+	q := DB.NewSelect().Model(&record)
+
+	if search.githubID != "" && search.githubIDLike != "" {
+		q = q.Where("github_id = ? OR github_id LIKE ?", search.githubID, search.githubIDLike)
+	} else if search.githubID != "" {
+		q = q.Where("github_id = ?", search.githubID)
+	} else if search.githubIDLike != "" {
+		q = q.Where("github_id LIKE ?", search.githubIDLike)
+	}
+	if search.eventType != "" {
+		q = q.Where("event_type = ?", search.eventType)
+	}
+	if search.withinWindow {
+		q = q.Where("updated_at > ?", time.Now().Add(-getMergeWindow()))
+	}
+
+	if err := q.Order("id DESC").Limit(1).Scan(ctx); err != nil {
+		return false, nil // 未找到可合并的记录
+	}
+
+	// 合并内容
+	var prevDetail EventDetail
+	_ = json.Unmarshal([]byte(record.Content), &prevDetail)
+	mergeFn(&prevDetail, detail)
+
+	// 构建并更新卡片
+	buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
+	card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, *detail)
+	buildCancel()
+
+	if err := UpdateMessage(record.FeishuMessageID, card); err != nil {
+		return false, fmt.Errorf("failed to update message: %w", err)
+	}
+
+	// 更新数据库记录
+	detailJson, _ := json.Marshal(detail)
+	_, _ = DB.NewUpdate().Model(&record).
+		Set("content = ?", string(detailJson)).
+		Set("card_string = ?", card.String()).
+		Set("updated_at = ?", time.Now()).
+		WherePK().Exec(ctx)
+
+	slog.Info(logMsg, "github_id", record.GithubID)
+	return true, nil
+}
+
+// extractCIStatus 从 CI 事件负载中提取 status 和 conclusion
+func extractCIStatus(m map[string]any, eventType string) (status, conclusion string) {
+	switch eventType {
+	case "workflow_run":
+		return ext(m, "workflow_run", "status"), ext(m, "workflow_run", "conclusion")
+	case "workflow_job":
+		return ext(m, "workflow_job", "status"), ext(m, "workflow_job", "conclusion")
+	case "check_run":
+		return ext(m, "check_run", "status"), ext(m, "check_run", "conclusion")
+	case "check_suite":
+		return ext(m, "check_suite", "status"), ext(m, "check_suite", "conclusion")
+	}
+	return "", ""
+}
+
+// sendTimeoutNotification 发送 Workflow 超时提醒回复
+func sendTimeoutNotification(parentMsgID, title string, startedAt time.Time) {
+	timeoutCard := NewCard()
+	timeoutCard.Header.Title = CardText{Tag: "plain_text", Content: "⏰ Workflow 运行超时提醒"}
+	timeoutCard.Header.Template = "orange"
+	duration := time.Since(startedAt).Round(time.Minute)
+	timeoutCard.AddMarkdown(fmt.Sprintf("**%s** 已经运行 **%s**，请检查是否卡住", title, duration))
+	if _, err := ReplyToMessage(parentMsgID, timeoutCard); err != nil {
+		slog.Error("Failed to send timeout notification", "error", err)
 	}
 }
 
@@ -198,184 +298,109 @@ func processWebhookEvent(event WebhookEvent) error {
 			Limit(1).Scan(ctx)
 
 		if err == nil {
-			// 获取当前状态
-			status := ""
-			conclusion := ""
-			if event.EventType == "workflow_run" {
-				status = ext(m, "workflow_run", "status")
-				conclusion = ext(m, "workflow_run", "conclusion")
-			} else if event.EventType == "workflow_job" {
-				status = ext(m, "workflow_job", "status")
-				conclusion = ext(m, "workflow_job", "conclusion")
-			} else if event.EventType == "check_run" {
-				status = ext(m, "check_run", "status")
-				conclusion = ext(m, "check_run", "conclusion")
-			} else if event.EventType == "check_suite" {
-				status = ext(m, "check_suite", "status")
-				conclusion = ext(m, "check_suite", "conclusion")
-			}
+			status, conclusion := extractCIStatus(m, event.EventType)
 
-			// 检查是否需要超时提醒（运行中且超过10分钟）
-			needTimeoutNotify := false
-			if conclusion == "" && status == "in_progress" && !record.WorkflowStartedAt.IsZero() {
-				if time.Since(record.WorkflowStartedAt) > 10*time.Minute && !record.TimeoutNotified {
-					needTimeoutNotify = true
-				}
-			}
-
-			// 如果已完成，重置超时提醒标志
+			// 已完成则重置超时提醒标志
 			if conclusion != "" && record.TimeoutNotified {
 				_, _ = DB.NewUpdate().Model(&record).
 					Set("timeout_notified = ?", false).
 					WherePK().Exec(ctx)
 			}
 
-			// 如果需要超时提醒，发送回复提醒
-			if needTimeoutNotify {
-				timeoutCard := NewCard()
-				timeoutCard.Header.Title = CardText{Tag: "plain_text", Content: "⏰ Workflow 运行超时提醒"}
-				timeoutCard.Header.Template = "orange"
-				duration := time.Since(record.WorkflowStartedAt).Round(time.Minute)
-				timeoutCard.AddMarkdown(fmt.Sprintf("**%s** 已经运行 **%s**，请检查是否卡住", detail.Title, duration))
-				if _, err := ReplyToMessage(record.FeishuMessageID, timeoutCard); err == nil {
-					// 标记已发送超时提醒
-					_, _ = DB.NewUpdate().Model(&record).
-						Set("timeout_notified = ?", true).
-						WherePK().Exec(ctx)
-					slog.Info("Workflow timeout notification sent", "github_id", githubID, "duration", duration)
-				}
-				// 继续更新原消息状态
+			// 运行中且超过 10 分钟未完成，发送超时提醒
+			if conclusion == "" && status == "in_progress" &&
+				!record.WorkflowStartedAt.IsZero() &&
+				time.Since(record.WorkflowStartedAt) > 10*time.Minute &&
+				!record.TimeoutNotified {
+				sendTimeoutNotification(record.FeishuMessageID, detail.Title, record.WorkflowStartedAt)
+				_, _ = DB.NewUpdate().Model(&record).
+					Set("timeout_notified = ?", true).
+					WherePK().Exec(ctx)
 			}
 
-			// 正常更新原消息
+			// 更新原消息
 			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
 			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
 			buildCancel()
 
-			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
-				// 更新数据库中的内容，防止后续操作（如刷新图片）使用旧数据
-				detailJson, _ := json.Marshal(detail)
-				_, _ = DB.NewUpdate().Model(&record).
-					Set("content = ?", string(detailJson)).
-					Set("card_string = ?", card.String()).
-					Set("updated_at = ?", time.Now()).
-					WherePK().Exec(ctx)
-
-				slog.Info("Workflow card updated", "github_id", githubID, "event_type", event.EventType)
-				return nil
-			} else {
-				// 如果更新失败，记录错误并返回，不要继续往下走去发新消息
+			if err := UpdateMessage(record.FeishuMessageID, card); err != nil {
 				return fmt.Errorf("failed to update message: %w", err)
 			}
+
+			detailJson, _ := json.Marshal(detail)
+			_, _ = DB.NewUpdate().Model(&record).
+				Set("content = ?", string(detailJson)).
+				Set("card_string = ?", card.String()).
+				Set("updated_at = ?", time.Now()).
+				WherePK().Exec(ctx)
+
+			slog.Info("Workflow card updated", "github_id", githubID, "event_type", event.EventType)
+			return nil
 		}
 	}
 
 	// 4.2 Release 事件：更新同一个 release 的消息（编辑、正式发布等）
 	if event.EventType == "release" && githubID != "" {
-		var record MessageRecord
-		if err := DB.NewSelect().Model(&record).
-			Where("github_id = ? AND event_type = 'release'", githubID).
-			Order("id DESC").
-			Limit(1).Scan(ctx); err == nil {
-
-			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
-			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
-			buildCancel()
-			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
-				detailJson, _ := json.Marshal(detail)
-				record.Content = string(detailJson)
-				record.CardString = card.String()
-				_, _ = DB.NewUpdate().Model(&record).
-					Column("content", "card_string").
-					WherePK().Exec(ctx)
-				slog.Info("Release card asynchronously updated", "github_id", githubID)
-				return nil
-			}
+		merged, err := tryMergeWithExisting(ctx,
+			mergeSearch{githubID: githubID, eventType: "release"},
+			func(_, new *EventDetail) {}, // Release 直接替换，无需合并
+			&detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"Release card updated",
+		)
+		if merged {
+			return err
 		}
 	}
 
-	// 只合并分支推送（非 tag 推送），且需要有实际内容
+	// 4.3 分支推送合并：同一分支在合并窗口内的连续推送合并为一条
 	if event.EventType == "push" && githubID != "" && !detail.IsTag && detail.Text != "" {
-		var record MessageRecord
-		if err := DB.NewSelect().Model(&record).
-			Where("github_id = ? AND updated_at > ?", githubID, time.Now().Add(-5*time.Minute)).
-			Scan(ctx); err == nil {
-
-			var prevDetail EventDetail
-			_ = json.Unmarshal([]byte(record.Content), &prevDetail)
-			detail.Text = prevDetail.Text + "\n" + detail.Text
-			detail.Title = "🍏 Branch Push (Merged)"
-
-			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
-			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
-			buildCancel()
-			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
-				detailJson, _ := json.Marshal(detail)
-				record.Content = string(detailJson)
-				_, _ = DB.NewUpdate().Model(&record).Column("content").WherePK().Exec(ctx)
-				slog.Info("Push merged asynchronously", "github_id", githubID)
-				return nil
-			}
+		merged, err := tryMergeWithExisting(ctx,
+			mergeSearch{githubID: githubID, withinWindow: true},
+			func(old, new *EventDetail) {
+				new.Text = old.Text + "\n" + new.Text
+				new.Title = "🍏 Branch Push (Merged)"
+			},
+			&detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"Push merged",
+		)
+		if merged {
+			return err
 		}
 	}
 
-	// 4.3 删除标签事件：合并同一仓库短时间内的多次标签删除
-	if event.EventType == "delete" && githubID != "" && detail.IsTag {
-		var record MessageRecord
-		if err := DB.NewSelect().Model(&record).
-			Where("github_id LIKE ? AND updated_at > ?",
-				fmt.Sprintf("delete:%s:tag:%%", repo),
-				time.Now().Add(-5*time.Minute)).
-			Order("id DESC").
-			Limit(1).Scan(ctx); err == nil {
-
-			var prevDetail EventDetail
-			_ = json.Unmarshal([]byte(record.Content), &prevDetail)
-			if prevDetail.Text != "" {
-				detail.Text = prevDetail.Text + "\n" + detail.Text
-			}
-			detail.Title = "🗑️ Tags Deleted (Merged)"
-
-			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
-			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
-			buildCancel()
-			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
-				detailJson, _ := json.Marshal(detail)
-				record.Content = string(detailJson)
-				_, _ = DB.NewUpdate().Model(&record).Column("content").WherePK().Exec(ctx)
-				slog.Info("Tag deletions merged", "github_id", record.GithubID, "repo", repo)
-				return nil
-			}
+	// 4.4 标签删除合并：同一仓库在合并窗口内的标签删除合并
+	if event.EventType == "delete" && detail.IsTag {
+		merged, err := tryMergeWithExisting(ctx,
+			mergeSearch{githubIDLike: fmt.Sprintf("delete:%s:tag:%%", repo), withinWindow: true},
+			func(old, new *EventDetail) {
+				if old.Text != "" {
+					new.Text = old.Text + "\n" + new.Text
+				}
+				new.Title = "🗑️ Tags Deleted (Merged)"
+			},
+			&detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"Tag deletions merged",
+		)
+		if merged {
+			return err
 		}
 	}
 
-	// 4.4 创建标签事件：合并同一仓库短时间内的多次标签创建
-	if event.EventType == "create" && githubID != "" && detail.IsTag {
-		var record MessageRecord
-		if err := DB.NewSelect().Model(&record).
-			Where("github_id LIKE ? AND updated_at > ?",
-				fmt.Sprintf("create:%s:tag:%%", repo),
-				time.Now().Add(-5*time.Minute)).
-			Order("id DESC").
-			Limit(1).Scan(ctx); err == nil {
-
-			var prevDetail EventDetail
-			_ = json.Unmarshal([]byte(record.Content), &prevDetail)
-			if prevDetail.Text != "" {
-				detail.Text = prevDetail.Text + "\n" + detail.Text
-			}
-			detail.Title = "🏷️ New Tags (Merged)"
-
-			buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
-			card := BuildCard(buildCtx, repo, repoUrl, sender, senderUrl, avatarUrl, detail)
-			buildCancel()
-			if err := UpdateMessage(record.FeishuMessageID, card); err == nil {
-				detailJson, _ := json.Marshal(detail)
-				record.Content = string(detailJson)
-				_, _ = DB.NewUpdate().Model(&record).Column("content").WherePK().Exec(ctx)
-				slog.Info("Tag creations merged", "github_id", record.GithubID, "repo", repo)
-				return nil
-			}
+	// 4.5 标签创建合并：同一仓库在合并窗口内的标签创建合并
+	if event.EventType == "create" && detail.IsTag {
+		merged, err := tryMergeWithExisting(ctx,
+			mergeSearch{githubIDLike: fmt.Sprintf("create:%s:tag:%%", repo), withinWindow: true},
+			func(old, new *EventDetail) {
+				if old.Text != "" {
+					new.Text = old.Text + "\n" + new.Text
+				}
+				new.Title = "🏷️ New Tags (Merged)"
+			},
+			&detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"Tag creations merged",
+		)
+		if merged {
+			return err
 		}
 	}
 
@@ -503,20 +528,7 @@ func processWebhookEvent(event WebhookEvent) error {
 		// CI 事件：记录开始时间
 		workflowStartedAt := time.Time{}
 		if isCIEvent {
-			// 如果在上面的更新逻辑中已经提取过了，就直接用；否则重新提取
-			status := ext(m, event.EventType, "status")
-			conclusion := ext(m, event.EventType, "conclusion")
-			if event.EventType == "workflow_job" {
-				status = ext(m, "workflow_job", "status")
-				conclusion = ext(m, "workflow_job", "conclusion")
-			} else if event.EventType == "check_run" {
-				status = ext(m, "check_run", "status")
-				conclusion = ext(m, "check_run", "conclusion")
-			} else if event.EventType == "check_suite" {
-				status = ext(m, "check_suite", "status")
-				conclusion = ext(m, "check_suite", "conclusion")
-			}
-
+			status, conclusion := extractCIStatus(m, event.EventType)
 			if status == "in_progress" && conclusion == "" {
 				workflowStartedAt = time.Now()
 			}

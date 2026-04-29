@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"time"
 
@@ -41,10 +42,6 @@ type MessageRecord struct {
 	WorkflowStartedAt time.Time `bun:",nullzero"`
 	// Workflow 专用：是否已经发送过超时提醒
 	TimeoutNotified bool `bun:",default:false"`
-}
-
-func (m *MessageRecord) BeforeCreateTable(ctx context.Context, query *bun.CreateTableQuery) error {
-	return nil
 }
 
 // WebhookEvent 存储所有来自 GitHub 的原始请求，持久化保存
@@ -104,4 +101,39 @@ func InitDB() {
 
 	DB = db
 	log.Println("Database initialization successful")
+
+	// 自动补齐缺失的列（ALTER TABLE ADD COLUMN IF NOT EXISTS）
+	migrateDB(db)
+}
+
+// migrateDB 自动检测并补齐已存在表中缺失的列。
+// 使用 PostgreSQL 原生的 ADD COLUMN IF NOT EXISTS 语法，幂等安全。
+func migrateDB(db *bun.DB) {
+	type migration struct {
+		table  string
+		column string
+		typ    string
+	}
+	migrations := []migration{
+		// MessageRecord
+		{"message_records", "event_id", "BIGINT NOT NULL DEFAULT 0"},
+		{"message_records", "image_status", "TEXT DEFAULT 'done'"},
+		{"message_records", "avatar_url", "TEXT"},
+		{"message_records", "workflow_started_at", "TIMESTAMPTZ"},
+		{"message_records", "timeout_notified", "BOOLEAN DEFAULT FALSE"},
+		// WebhookEvent
+		{"webhook_events", "hook_id", "BIGINT"},
+		// ImageCache
+		{"image_caches", "hash", "TEXT"},
+	}
+
+	for _, m := range migrations {
+		_, err := db.Exec(fmt.Sprintf(
+			"ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s",
+			m.table, m.column, m.typ,
+		))
+		if err != nil {
+			log.Printf("Migration warning: %s.%s — %v", m.table, m.column, err)
+		}
+	}
 }

@@ -3,10 +3,7 @@ package bot
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/md5"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -241,55 +238,6 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 		return "", fmt.Errorf("send message failed code=%d msg=%s", resp.Code, resp.Msg)
 	}
 	return "", fmt.Errorf("send message failed: resp is nil or data is nil")
-}
-
-// SendCard 通过 Webhook 发送卡片（兜底兼容模式）
-func SendCard(card *Card) error {
-	if C.Feishu.Webhook == "" {
-		_, err := SendToChat("", card)
-		return err
-	}
-	ts := time.Now().Unix()
-	sign, err := genSign(C.Feishu.Secret, ts)
-	if err != nil {
-		return err
-	}
-
-	var result struct {
-		Code int    `json:"code"`
-		Msg  string `json:"msg"`
-	}
-
-	res, err := httpClient.R().
-		SetHeader("Content-Type", "application/json").
-		SetBody(map[string]any{
-			"msg_type":  "interactive",
-			"card":      card,
-			"timestamp": fmt.Sprint(ts),
-			"sign":      sign,
-		}).
-		SetResult(&result).
-		Post(C.Feishu.Webhook)
-
-	if err != nil {
-		return err
-	}
-	if res.StatusCode() > 299 {
-		return fmt.Errorf("HTTP %d: %s", res.StatusCode(), res.String())
-	}
-	if result.Code != 0 {
-		return fmt.Errorf("feishu error code=%d msg=%s", result.Code, result.Msg)
-	}
-	return nil
-}
-
-func genSign(secret string, ts int64) (string, error) {
-	str := fmt.Sprintf("%v\n%s", ts, secret)
-	h := hmac.New(sha256.New, []byte(secret))
-	if _, err := h.Write([]byte(str)); err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(h.Sum(nil)), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -554,24 +502,3 @@ func (c *Card) AddImage(imgKey, altText string, mode string) {
 	}
 	c.Body.Elements = append(c.Body.Elements, el)
 }
-
-// ---------------------------------------------------------------------------
-// 废弃兼容层（避免其他文件编译报错，后续可删除）
-// ---------------------------------------------------------------------------
-
-// CardField 卡片字段（旧版 div fields，V2 已改用 column_set）
-type CardField struct {
-	IsShort bool      `json:"is_short"`
-	Text    *CardText `json:"text"`
-}
-
-// CardElement 旧版通用元素（兼容保留）
-type CardElement struct {
-	Tag     string      `json:"tag"`
-	Content string      `json:"content,omitempty"`
-	Text    *CardText   `json:"text,omitempty"`
-	Fields  []CardField `json:"fields,omitempty"`
-}
-
-// Text 兼容旧版 Text 类型（与 CardText 等价）
-type Text = CardText

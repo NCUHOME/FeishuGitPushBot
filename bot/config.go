@@ -26,6 +26,12 @@ type Config struct {
 	Database struct {
 		URL string `koanf:"url"`
 	} `koanf:"database"`
+	Events struct {
+		MergeWindow int `koanf:"merge_window"` // 同类事件合并窗口（分钟），默认 10
+	} `koanf:"events"`
+	Security struct {
+		AllowedIPs string `koanf:"allowed_ips"` // GitHub Webhook 来源 IP 白名单（CIDR，逗号分隔），留空则不校验
+	} `koanf:"security"`
 }
 
 var C Config
@@ -54,6 +60,12 @@ func LoadConfig() {
 		if s == "database_url" {
 			return "database.url"
 		}
+		if s == "events_merge_window" {
+			return "events.merge_window"
+		}
+		if s == "github_webhook_ips" {
+			return "security.allowed_ips"
+		}
 		return s
 	}), nil)
 
@@ -72,5 +84,12 @@ func LoadConfig() {
 	}
 	if C.Database.URL == "" {
 		log.Println("Warning: DATABASE_URL is not set, message records will not be saved for updates or replies")
+	}
+	if C.Events.MergeWindow == 0 {
+		C.Events.MergeWindow = 10 // 默认 10 分钟
+	}
+	log.Printf("Event merge window: %d minutes", C.Events.MergeWindow)
+	if C.Security.AllowedIPs != "" {
+		log.Printf("Webhook IP whitelist enabled: %s", C.Security.AllowedIPs)
 	}
 }
