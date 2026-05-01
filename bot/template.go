@@ -169,7 +169,24 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 				lines = append(lines, fmt.Sprintf("%s %s%s%s", emojiIcon, msg, hashPart, authorPart))
 			}
-			d.Text = strings.Join(lines, "\n")
+			// 如果某条提交的消息包含 markdown 列表，紧跟 \n 无法断开列表上下文
+			// 则在该行后插入空行（\n\n）以强制结束列表
+			if len(lines) > 1 {
+				var sb strings.Builder
+				for i, line := range lines {
+					if i > 0 {
+						if containsMarkdownList(lines[i-1]) {
+							sb.WriteString("\n\n")
+						} else {
+							sb.WriteString("\n")
+						}
+					}
+					sb.WriteString(line)
+				}
+				d.Text = sb.String()
+			} else {
+				d.Text = strings.Join(lines, "\n")
+			}
 		} else if e.GetDeleted() {
 			if isTag {
 				d.Title = fmt.Sprintf("🗑️ Tag Deleted: %s", refShort)
@@ -1066,6 +1083,14 @@ func Linkify(text, repoUrl string) string {
 	})
 
 	return text
+}
+
+// containsMarkdownList 检测字符串中是否包含 markdown 无序或有序列表语法
+// 匹配行首（或 \n 后）有零或多个空格/制表符，后跟 - * + 或 数字. 及空格
+var markdownListRe = regexp.MustCompile(`(?:^|\n)[ \t]*(?:[-*+]|\d+\.)[ \t]+`)
+
+func containsMarkdownList(s string) bool {
+	return markdownListRe.MatchString(s)
 }
 
 // ProcessCommitMessage 处理提交信息，转换 emoji、高亮 Conventional Commit 前缀，并转换 SHA/Issue 为链接
