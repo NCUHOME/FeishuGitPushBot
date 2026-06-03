@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/go-github/v84/github"
 	"github.com/kyokomi/emoji/v2"
@@ -1700,19 +1701,27 @@ func buildSummaryRow(metaText, senderText string, resolvedAvatars []string) map[
 	}
 
 	// 有头像：column_set 左右布局
-	avatarEls := make([]any, 0, len(resolvedAvatars))
+	// 右列用嵌套 column_set 让头像和用户名水平排列（飞书列内元素默认垂直堆叠）
+	avatarCols := make([]any, 0, len(resolvedAvatars))
 	for _, key := range resolvedAvatars {
-		avatarEls = append(avatarEls, map[string]any{
-			"tag":          "img",
-			"img_key":      key,
-			"custom_width": 20,
-			"mode":         "crop_center",
-			"alt":          map[string]string{"tag": "plain_text", "content": "avatar"},
+		avatarCols = append(avatarCols, map[string]any{
+			"tag":      "column",
+			"width":    "auto",
+			"elements": []any{map[string]any{
+				"tag":          "img",
+				"img_key":      key,
+				"custom_width": 20,
+				"mode":         "crop_center",
+				"alt":          map[string]string{"tag": "plain_text", "content": "avatar"},
+			}},
 		})
 	}
-	userEls := make([]any, 0, len(avatarEls)+1)
-	userEls = append(userEls, avatarEls...)
-	userEls = append(userEls, map[string]any{"tag": "markdown", "content": senderText})
+	// 用户名列
+	avatarCols = append(avatarCols, map[string]any{
+		"tag":      "column",
+		"width":    "auto",
+		"elements": []any{map[string]any{"tag": "markdown", "content": senderText}},
+	})
 
 	return map[string]any{
 		"tag":                "column_set",
@@ -1725,9 +1734,15 @@ func buildSummaryRow(metaText, senderText string, resolvedAvatars []string) map[
 				"elements":       []any{map[string]any{"tag": "markdown", "content": metaText}},
 			},
 			map[string]any{
-				"tag": "column", "width": "weighted", "weight": 2,
+				"tag":   "column",
+				"width": "weighted", "weight": 2,
 				"vertical_align": "center",
-				"elements":       userEls,
+				"elements": []any{map[string]any{
+					"tag":                "column_set",
+					"flex_mode":          "flow",
+					"horizontal_spacing": "small",
+					"columns":            avatarCols,
+				}},
 			},
 		},
 	}
@@ -1826,7 +1841,7 @@ func BuildCard(ctx context.Context, repo, sender, senderUrl, avatarUrl string, d
 			card.AddMarkdown(repoLine + " / 👤 " + senderText)
 		}
 
-		// 分支/标签列表
+		// 分支/标签列表（用 extractRefs 去重，兼容裸文本和 markdown 格式）
 		var refLines []string
 		if detail.RefName != "" {
 			if detail.RefURL != "" {
@@ -1835,11 +1850,7 @@ func BuildCard(ctx context.Context, repo, sender, senderUrl, avatarUrl string, d
 				refLines = append(refLines, fmt.Sprintf("%s %s", tagIcon, detail.RefName))
 			}
 		} else if detail.Text != "" {
-			for _, line := range strings.Split(detail.Text, "\n") {
-				name := strings.TrimSpace(line)
-				if name == "" {
-					continue
-				}
+			for _, name := range extractRefs(detail.Text) {
 				if repoUrl != "" {
 					refLines = append(refLines, fmt.Sprintf("%s [%s](%s%s)", tagIcon, name, repoUrl, linkPrefix+name))
 				} else {
@@ -1970,6 +1981,94 @@ func SafeText(s string, maxRunes int) string {
 		return string(runes[:maxRunes]) + "..."
 	}
 	return s
+}
+
+// extractRefs 从删除事件的 detail.Text 中提取纯分支/标签名列表，
+// 同时兼容裸文本（"feat/foo"）和 markdown 格式（"🌿 [feat/foo](url)"）。
+func extractRefs(text string) []string {
+	var names []string
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(text, "\n") {
+		name := extractRefName(line)
+		if name != "" && !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// extractRefName 从一行文本中提取分支/标签名，兼容裸文本和 markdown 链接格式。
+// "feat/foo" → "feat/foo"
+// "🌿 [feat/foo](https://...)" → "feat/foo"
+// "🌿 feat/foo" → "feat/foo"
+func extractRefName(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+	// 去掉开头的 emoji（🌿 🏷️ 等）
+	for len(line) > 0 {
+		r, size := utf8.DecodeRuneInString(line)
+		if r > 0x7F { // 非 ASCII（emoji 或全角字符）
+			line = strings.TrimSpace(line[size:])
+		} else {
+			break
+		}
+	}
+	// markdown 链接格式：[name](url) — 提取 [] 内的内容
+	if idx := strings.Index(line, "["); idx >= 0 {
+		if end := strings.Index(line[idx:], "]"); end >= 0 {
+			name := strings.TrimSpace(line[idx+1 : idx+end])
+			if name != "" {
+				return name
+			}
+		}
+	}
+	return strings.TrimSpace(line)
+}
+
+// escapeCodeHTML 转义反引号代码块（行内 `code` 和围栏 ```code```）中的 < 和 >，
+// 防止飞书将代码块内的 <br> 等标签渲染为 HTML 而非显示为字面文本。
+// 代码块外部的 <br> 保持不变，确保飞书硬换行仍可正常工作。
+func escapeCodeHTML(s string) string {
+	var buf strings.Builder
+	i := 0
+	n := len(s)
+
+	for i < n {
+		// 围栏代码块：```...```
+		if i+2 < n && s[i] == '`' && s[i+1] == '`' && s[i+2] == '`' {
+			end := strings.Index(s[i+3:], "```")
+			if end >= 0 {
+				buf.WriteString("```")
+				code := s[i+3 : i+3+end]
+				code = strings.ReplaceAll(code, "<", "＜")
+				code = strings.ReplaceAll(code, ">", "＞")
+				buf.WriteString(code)
+				buf.WriteString("```")
+				i = i + 3 + end + 3
+				continue
+			}
+		}
+		// 行内代码：`...`
+		if s[i] == '`' {
+			end := strings.Index(s[i+1:], "`")
+			if end >= 0 {
+				buf.WriteByte('`')
+				code := s[i+1 : i+1+end]
+				code = strings.ReplaceAll(code, "<", "＜")
+				code = strings.ReplaceAll(code, ">", "＞")
+				buf.WriteString(code)
+				buf.WriteByte('`')
+				i = i + 1 + end + 1
+				continue
+			}
+		}
+		buf.WriteByte(s[i])
+		i++
+	}
+	return buf.String()
 }
 
 var conventionalRegex = regexp.MustCompile(`(?i)(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert|ref)(\([^)]+\))?(!?):`)

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestSendDeleteCard(t *testing.T) {
@@ -300,4 +302,127 @@ func TestOnConflictInsert(t *testing.T) {
 
 	// Cleanup
 	_, _ = DB.NewDelete().Model(&rec).Where("github_id = ?", githubID).Exec(ctx)
+}
+
+func TestExtractRefName(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"bare name", "feat/foo", "feat/foo"},
+		{"bare name with spaces", "  feat/foo  ", "feat/foo"},
+		{"markdown link", "🌿 [feat/foo](https://github.com/x/y/tree/feat/foo)", "feat/foo"},
+		{"tag link", "🏷️ [v1.0](https://github.com/x/y/releases/tag/v1.0)", "v1.0"},
+		{"emoji prefix only", "🌿 feat/bar", "feat/bar"},
+		{"empty", "", ""},
+		{"blank line", "   ", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractRefName(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestExtractRefs(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{"bare names", "feat/a\nfeat/b\nfeat/a", []string{"feat/a", "feat/b"}},
+		{"mixed format", "feat/a\n🌿 [feat/b](url)\nfeat/a", []string{"feat/a", "feat/b"}},
+		{"markdown links", "🌿 [feat/a](url1)\n🌿 [feat/b](url2)", []string{"feat/a", "feat/b"}},
+		{"empty", "", nil},
+		{"blank lines", "\n\n\n", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractRefs(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestMergeRefs(t *testing.T) {
+	tests := []struct {
+		name   string
+		old    string
+		new    string
+		expect string
+	}{
+		{"both bare", "feat/a", "feat/b", "feat/a\nfeat/b"},
+		{"dedup bare", "feat/a\nfeat/b", "feat/b", "feat/a\nfeat/b"},
+		{"mixed format", "feat/a", "🌿 [feat/a](url)", "feat/a"},
+		{"old empty", "", "feat/a", "feat/a"},
+		{"new empty", "feat/a", "", "feat/a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeRefs(tt.old, tt.new)
+			assert.Equal(t, tt.expect, got)
+		})
+	}
+}
+
+func TestEscapeCodeHTML(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "plain text unchanged",
+			input: "hello world",
+			want:  "hello world",
+		},
+		{
+			name:  "br outside code preserved",
+			input: "line1<br>line2",
+			want:  "line1<br>line2",
+		},
+		{
+			name:  "br inside inline code escaped",
+			input: "use `<br>` for breaks",
+			want:  "use `＜br＞` for breaks",
+		},
+		{
+			name:  "br inside fenced code block escaped",
+			input: "```\nline1\n<br>\nline3\n```",
+			want:  "```\nline1\n＜br＞\nline3\n```",
+		},
+		{
+			name:  "mixed: br outside and inside code",
+			input: "line1<br>and `use <br>` here",
+			want:  "line1<br>and `use ＜br＞` here",
+		},
+		{
+			name:  "angle brackets inside code escaped",
+			input: "`<div>` and `<script>`",
+			want:  "`＜div＞` and `＜script＞`",
+		},
+		{
+			name:  "multiple inline code spans",
+			input: "`<a>` normal `<b>`",
+			want:  "`＜a＞` normal `＜b＞`",
+		},
+		{
+			name:  "unclosed backtick unchanged",
+			input: "use `<br> here",
+			want:  "use `<br> here",
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := escapeCodeHTML(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

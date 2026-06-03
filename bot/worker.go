@@ -223,6 +223,22 @@ func sendTimeoutNotification(parentMsgID, title string, startedAt time.Time) {
 	}
 }
 
+// mergeRefs 合并两个删除事件的 Text，去重后返回纯分支/标签名列表（每行一个）。
+// 兼容裸文本（"feat/foo"）和 markdown 格式（"🌿 [feat/foo](url)"）。
+func mergeRefs(oldText, newText string) string {
+	names := extractRefs(oldText)
+	seen := make(map[string]bool)
+	for _, n := range names {
+		seen[n] = true
+	}
+	for _, n := range extractRefs(newText) {
+		if !seen[n] {
+			names = append(names, n)
+		}
+	}
+	return strings.Join(names, "\n")
+}
+
 // findParentRecordBySHA 根据 commit SHA 查找同一仓库下 push/create 事件的消息记录
 // 排除已删除的消息记录，避免 CI 事件错误关联到分支删除记录
 func findParentRecordBySHA(ctx context.Context, repo, sha string) *MessageRecord {
@@ -829,7 +845,7 @@ func processWebhookEvent(event WebhookEvent) error {
 			},
 			func(old, new *EventDetail) {
 				if old.Text != "" {
-					new.Text = old.Text + "\n" + new.Text
+					new.Text = mergeRefs(old.Text, new.Text)
 				}
 				new.Title = fmt.Sprintf("🗑️ Branch Deleted: %s", repo)
 				new.RefName = ""
@@ -854,7 +870,7 @@ func processWebhookEvent(event WebhookEvent) error {
 			mergeSearch{githubIDLike: fmt.Sprintf("delete:%s:tag:%%", repo), withinWindow: true},
 			func(old, new *EventDetail) {
 				if old.Text != "" {
-					new.Text = old.Text + "\n---\n" + new.Text
+					new.Text = mergeRefs(old.Text, new.Text)
 				}
 				new.Title = fmt.Sprintf("🗑️ Tag Deleted: %s", repo)
 				new.RefName = ""
@@ -886,7 +902,7 @@ func processWebhookEvent(event WebhookEvent) error {
 			},
 			func(old, new *EventDetail) {
 				if old.Text != "" {
-					new.Text = old.Text + "\n" + new.Text
+					new.Text = mergeRefs(old.Text, new.Text)
 				}
 				new.Title = fmt.Sprintf("🗑️ Branch Deleted: %s", repo)
 				new.RefName = ""

@@ -319,7 +319,7 @@ func (c *Card) AddDivider() {
 func (c *Card) AddMarkdown(content string) {
 	c.Body.Elements = append(c.Body.Elements, map[string]any{
 		"tag":     "markdown",
-		"content": content,
+		"content": escapeCodeHTML(content),
 	})
 }
 
@@ -327,7 +327,7 @@ func (c *Card) AddMarkdown(content string) {
 func (c *Card) AddMarkdownWithSize(content string, size string) {
 	c.Body.Elements = append(c.Body.Elements, map[string]any{
 		"tag":       "markdown",
-		"content":   content,
+		"content":   escapeCodeHTML(content),
 		"text_size": size,
 	})
 }
@@ -344,13 +344,13 @@ func (c *Card) AddCollapsiblePanel(title, content string) {
 		"header": map[string]any{
 			"title": map[string]string{
 				"tag":     "lark_md",
-				"content": title,
+				"content": escapeCodeHTML(title),
 			},
 		},
 		"elements": []any{
 			map[string]any{
 				"tag":     "markdown",
-				"content": content,
+				"content": escapeCodeHTML(content),
 			},
 		},
 		"border": map[string]any{
@@ -431,7 +431,7 @@ func (c *Card) AddNote(content string) {
 	}
 	c.Body.Elements = append(c.Body.Elements, map[string]any{
 		"tag":       "markdown",
-		"content":   content,
+		"content":   escapeCodeHTML(content),
 		"text_size": "notation",
 	})
 }
