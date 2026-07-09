@@ -811,13 +811,22 @@ func ParseEvent(event any, eventType string) EventDetail {
 			d.Skip = true
 			return d
 		}
-		d.Title = fmt.Sprintf("👥 Team %s: %s", team.GetName(), e.GetAction())
-		d.Text = fmt.Sprintf("Action: **%s**\nTeam: **%s**", e.GetAction(), team.GetName())
+		action := e.GetAction()
 		if repo := e.GetRepo(); repo != nil {
-			d.Text += fmt.Sprintf("\nRepo: **%s**", repo.GetFullName())
+			senderLogin, senderURL := teamEventSender(e.GetSender(), team.GetName())
+			d.Title = formatTeamAccessEventTitle(action, e.GetChanges())
+			d.Text = formatTeamAccessOperationLine(action, team.GetName(), team.GetHTMLURL(), senderLogin, senderURL, formatTeamAccessChangeDetails(team, e.GetChanges()))
+			d.URL = repoSettingsAccessURL(repo.GetHTMLURL())
+			if sender := e.GetSender(); sender != nil {
+				d.AuthorLogins = []string{sender.GetLogin()}
+				d.AuthorAvatars = []string{sender.GetAvatarURL()}
+			}
+		} else {
+			d.Title = fmt.Sprintf("👥 Team %s: %s", team.GetName(), action)
+			d.Text = fmt.Sprintf("Action: **%s**\nTeam: **%s**", action, team.GetName())
+			d.URL = team.GetHTMLURL()
 		}
-		d.Action = e.GetAction()
-		d.URL = team.GetHTMLURL()
+		d.Action = action
 
 	case *github.MemberEvent:
 		member := e.GetMember()
@@ -825,19 +834,22 @@ func ParseEvent(event any, eventType string) EventDetail {
 			d.Skip = true
 			return d
 		}
-		d.Title = fmt.Sprintf("👤 Member %s: %s", member.GetLogin(), e.GetAction())
-		text := fmt.Sprintf("Action: **%s**\nMember: **%s**", e.GetAction(), member.GetLogin())
+		d.Title = formatMemberEventTitle(e.GetAction(), e.GetChanges())
+		senderLogin := ""
+		senderURL := ""
 		if sender := e.GetSender(); sender != nil && sender.GetLogin() != member.GetLogin() {
-			text += fmt.Sprintf("\nBy: **%s**", sender.GetLogin())
+			senderLogin = sender.GetLogin()
+			senderURL = sender.GetHTMLURL()
 		}
-		d.Text = text
+		d.Text = formatMemberOperationLine(e.GetAction(), member.GetLogin(), member.GetHTMLURL(), senderLogin, senderURL, e.GetChanges())
 		d.Action = e.GetAction()
-		d.URL = member.GetHTMLURL()
-		d.AuthorLogins = []string{member.GetLogin()}
-		d.AuthorAvatars = []string{member.GetAvatarURL()}
-		if sender := e.GetSender(); sender != nil && sender.GetLogin() != member.GetLogin() {
-			d.AuthorLogins = append(d.AuthorLogins, sender.GetLogin())
-			d.AuthorAvatars = append(d.AuthorAvatars, sender.GetAvatarURL())
+		if repo := e.GetRepo(); repo != nil {
+			d.URL = repoSettingsAccessURL(repo.GetHTMLURL())
+		}
+		d.EventCount = 1
+		if sender := e.GetSender(); sender != nil {
+			d.AuthorLogins = []string{sender.GetLogin()}
+			d.AuthorAvatars = []string{sender.GetAvatarURL()}
 		}
 		if ts := member.GetCreatedAt(); !ts.IsZero() {
 			d.EventTime = ts.Format(time.RFC3339)
@@ -1386,13 +1398,21 @@ func ParseEvent(event any, eventType string) EventDetail {
 			d.Skip = true
 			return d
 		}
-		d.Title = fmt.Sprintf("👥 Team Added: %s", team.GetName())
-		text := fmt.Sprintf("**Team:** [%s](%s)", team.GetName(), team.GetHTMLURL())
+		d.Action = "added"
+		senderLogin, senderURL := teamEventSender(e.GetSender(), team.GetName())
 		if repo := e.GetRepo(); repo != nil {
-			text += fmt.Sprintf("\n**Repo:** %s", repo.GetFullName())
+			d.Title = "👥 Team access added"
+			d.Text = formatTeamAccessOperationLine("added", team.GetName(), team.GetHTMLURL(), senderLogin, senderURL, formatTeamAccessAddedDetails(team))
+			d.URL = repoSettingsAccessURL(repo.GetHTMLURL())
+		} else {
+			d.Title = fmt.Sprintf("👥 Team Added: %s", team.GetName())
+			d.Text = fmt.Sprintf("**Team:** [%s](%s)", team.GetName(), team.GetHTMLURL())
+			d.URL = team.GetHTMLURL()
 		}
-		d.Text = text
-		d.URL = team.GetHTMLURL()
+		if sender := e.GetSender(); sender != nil {
+			d.AuthorLogins = []string{sender.GetLogin()}
+			d.AuthorAvatars = []string{sender.GetAvatarURL()}
+		}
 
 	case *github.PageBuildEvent:
 		build := e.GetBuild()
@@ -1487,6 +1507,152 @@ func formatPermissionGroup(scope string, permissions map[string]string) []string
 		lines = append(lines, fmt.Sprintf("- `%s.%s`: **%s**", scope, key, permissions[key]))
 	}
 	return lines
+}
+
+func formatMemberOperationLine(action, memberLogin, memberURL, senderLogin, senderURL string, changes *github.MemberChanges) string {
+	if action == "" {
+		action = "updated"
+	}
+	line := fmt.Sprintf("- **%s** member %s", action, boldMarkdownLink(memberLogin, memberURL))
+	if senderLogin != "" && senderLogin != memberLogin {
+		line += fmt.Sprintf(" by %s", boldMarkdownLink(senderLogin, senderURL))
+	}
+	if details := formatMemberChangeDetails(changes); len(details) > 0 {
+		line += "; " + strings.Join(details, "; ")
+	}
+	return line
+}
+
+func boldMarkdownLink(text, url string) string {
+	if text == "" {
+		return ""
+	}
+	if url == "" {
+		return fmt.Sprintf("**%s**", text)
+	}
+	return fmt.Sprintf("**[%s](%s)**", text, url)
+}
+
+func repoSettingsAccessURL(repoURL string) string {
+	if repoURL == "" {
+		return ""
+	}
+	return strings.TrimRight(repoURL, "/") + "/settings/access"
+}
+
+func teamEventSender(sender *github.User, teamName string) (string, string) {
+	if sender == nil || sender.GetLogin() == teamName {
+		return "", ""
+	}
+	return sender.GetLogin(), sender.GetHTMLURL()
+}
+
+func formatTeamAccessEventTitle(action string, changes *github.TeamChange) string {
+	if action == "" {
+		action = "updated"
+	}
+	if action == "edited" && changes != nil && changes.GetRepository() != nil {
+		return "👥 Team access edited"
+	}
+	return fmt.Sprintf("👥 Team access %s", action)
+}
+
+func formatTeamAccessOperationLine(action, teamName, teamURL, senderLogin, senderURL string, details []string) string {
+	if action == "" {
+		action = "updated"
+	}
+	line := fmt.Sprintf("- **%s** team %s", action, boldMarkdownLink(teamName, teamURL))
+	if senderLogin != "" && senderLogin != teamName {
+		line += fmt.Sprintf(" by %s", boldMarkdownLink(senderLogin, senderURL))
+	}
+	if len(details) > 0 {
+		line += "; " + strings.Join(details, "; ")
+	}
+	return line
+}
+
+func formatTeamAccessAddedDetails(team *github.Team) []string {
+	if permission := team.GetPermission(); permission != "" {
+		return []string{formatMemberChangeValue("permission", "", permission)}
+	}
+	return nil
+}
+
+func formatTeamAccessChangeDetails(team *github.Team, changes *github.TeamChange) []string {
+	if changes == nil || changes.GetRepository() == nil {
+		return formatTeamAccessAddedDetails(team)
+	}
+	permissions := changes.GetRepository().GetPermissions()
+	if permissions == nil || permissions.GetFrom() == nil {
+		return formatTeamAccessAddedDetails(team)
+	}
+	if detail := formatMemberChangeValue("permission", teamPermissionFromFlags(permissions.GetFrom()), team.GetPermission()); detail != "" {
+		return []string{detail}
+	}
+	return nil
+}
+
+func teamPermissionFromFlags(from *github.TeamPermissionsFrom) string {
+	switch {
+	case from.GetAdmin():
+		return "admin"
+	case from.GetPush():
+		return "write"
+	case from.GetPull():
+		return "read"
+	default:
+		return ""
+	}
+}
+
+func formatMemberEventTitle(action string, changes *github.MemberChanges) string {
+	if action == "" {
+		action = "updated"
+	}
+	if action == "edited" && changes != nil {
+		hasPermission := changes.GetPermission() != nil
+		hasRoleName := changes.GetRoleName() != nil
+		switch {
+		case hasPermission && hasRoleName:
+			return "👤 Member access edited"
+		case hasPermission:
+			return "👤 Member permission edited"
+		case hasRoleName:
+			return "👤 Member role edited"
+		}
+	}
+	return fmt.Sprintf("👤 Member %s", action)
+}
+
+func formatMemberChangeDetails(changes *github.MemberChanges) []string {
+	if changes == nil {
+		return nil
+	}
+	var details []string
+	if permission := changes.GetPermission(); permission != nil {
+		if detail := formatMemberChangeValue("permission", permission.GetFrom(), permission.GetTo()); detail != "" {
+			details = append(details, detail)
+		}
+	}
+	if roleName := changes.GetRoleName(); roleName != nil {
+		if detail := formatMemberChangeValue("role_name", roleName.GetFrom(), roleName.GetTo()); detail != "" {
+			details = append(details, detail)
+		}
+	}
+	return details
+}
+
+func formatMemberChangeValue(name, from, to string) string {
+	switch {
+	case from != "" && to != "":
+		return fmt.Sprintf("%s: `%s` -> `%s`", name, from, to)
+	case from != "":
+		return fmt.Sprintf("%s from `%s`", name, from)
+	case to != "":
+		return fmt.Sprintf("%s to `%s`", name, to)
+	default:
+		return ""
+	}
 }
 
 func securityAndAnalysisFromChange(change *github.SecurityAndAnalysisChange) *github.SecurityAndAnalysis {
