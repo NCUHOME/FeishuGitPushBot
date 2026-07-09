@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-github/v84/github"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -41,14 +42,14 @@ func TestSendMergedDeleteCard(t *testing.T) {
 
 	// 模拟合并后的分支删除：多个分支名在 Text 中
 	detail := EventDetail{
-		Title:         "🗑️ Branch Deleted: FeishuGitPushBot",
-		IsDeleted:     true,
-		Text:          "Plot\nfeature-abc\nfix-xyz",
-		EventTime:     time.Now().Add(-2 * time.Minute).Format(time.RFC3339),
-		EventTimeEnd:  time.Now().Format(time.RFC3339),
-		RepoName:      "NCUHOME/FeishuGitPushBot",
-		RepoURL:       "https://github.com/NCUHOME/FeishuGitPushBot",
-		AuthorLogins:  []string{"hangone"},
+		Title:        "🗑️ Branch Deleted: FeishuGitPushBot",
+		IsDeleted:    true,
+		Text:         "Plot\nfeature-abc\nfix-xyz",
+		EventTime:    time.Now().Add(-2 * time.Minute).Format(time.RFC3339),
+		EventTimeEnd: time.Now().Format(time.RFC3339),
+		RepoName:     "NCUHOME/FeishuGitPushBot",
+		RepoURL:      "https://github.com/NCUHOME/FeishuGitPushBot",
+		AuthorLogins: []string{"hangone"},
 	}
 
 	ctx := context.Background()
@@ -67,15 +68,15 @@ func TestSendPushCard(t *testing.T) {
 	InitDB()
 
 	detail := EventDetail{
-		Title:    "🍏 New commits",
-		RefName:  "feat/ts-idiomatic",
-		RefURL:   "https://github.com/NCUHOME/payfission/tree/feat/ts-idiomatic",
-		SHA:      "0f6fbb7",
-		FullSHA:  "0f6fbb7abc1234567890abcdef1234567890abc",
-		RepoName: "NCUHOME/payfission",
-		RepoURL:  "https://github.com/NCUHOME/payfission",
-		URL:      "https://github.com/NCUHOME/payfission/commit/0f6fbb7abc1234567890abcdef1234567890abc",
-		Text:     "🔸 **docs(domain):** 为值对象添加开发者须知注释 ([ae49a3a](https://github.com/NCUHOME/payfission/commit/ae49a3a123))<br>🔹 **docs:** 补充 TypeScript 惯用风格说明和开发者须知 ([70fd8f6](https://github.com/NCUHOME/payfission/commit/70fd8f6abc))<br>🔸 **docs:** 添加 TypeScript 惯用风格 Skill ([0f6fbb7](https://github.com/NCUHOME/payfission/commit/0f6fbb7abc))",
+		Title:         "🍏 New commits",
+		RefName:       "feat/ts-idiomatic",
+		RefURL:        "https://github.com/NCUHOME/payfission/tree/feat/ts-idiomatic",
+		SHA:           "0f6fbb7",
+		FullSHA:       "0f6fbb7abc1234567890abcdef1234567890abc",
+		RepoName:      "NCUHOME/payfission",
+		RepoURL:       "https://github.com/NCUHOME/payfission",
+		URL:           "https://github.com/NCUHOME/payfission/commit/0f6fbb7abc1234567890abcdef1234567890abc",
+		Text:          "🔸 **docs(domain):** 为值对象添加开发者须知注释 ([ae49a3a](https://github.com/NCUHOME/payfission/commit/ae49a3a123))<br>🔹 **docs:** 补充 TypeScript 惯用风格说明和开发者须知 ([70fd8f6](https://github.com/NCUHOME/payfission/commit/70fd8f6abc))<br>🔸 **docs:** 添加 TypeScript 惯用风格 Skill ([0f6fbb7](https://github.com/NCUHOME/payfission/commit/0f6fbb7abc))",
 		AuthorLogins:  []string{"hesitling"},
 		AuthorAvatars: []string{"https://avatars.githubusercontent.com/hesitling"},
 		CommitCount:   3,
@@ -107,15 +108,15 @@ func TestSendPushCardManyCommits(t *testing.T) {
 	}
 
 	detail := EventDetail{
-		Title:    "🍏 New commits",
-		RefName:  "main",
-		RefURL:   "https://github.com/NCUHOME/test/tree/main",
-		SHA:      "mno7890",
-		FullSHA:  "mno7890abcdef1234567890abcdef1234567890ab",
-		RepoName: "NCUHOME/test",
-		RepoURL:  "https://github.com/NCUHOME/test",
-		URL:      "https://github.com/NCUHOME/test/commit/mno7890abcdef1234567890abcdef1234567890ab",
-		Text:     joinCommits(commits),
+		Title:         "🍏 New commits",
+		RefName:       "main",
+		RefURL:        "https://github.com/NCUHOME/test/tree/main",
+		SHA:           "mno7890",
+		FullSHA:       "mno7890abcdef1234567890abcdef1234567890ab",
+		RepoName:      "NCUHOME/test",
+		RepoURL:       "https://github.com/NCUHOME/test",
+		URL:           "https://github.com/NCUHOME/test/commit/mno7890abcdef1234567890abcdef1234567890ab",
+		Text:          joinCommits(commits),
 		AuthorLogins:  []string{"testuser"},
 		AuthorAvatars: []string{"https://avatars.githubusercontent.com/testuser"},
 		CommitCount:   5,
@@ -131,6 +132,47 @@ func TestSendPushCardManyCommits(t *testing.T) {
 		t.Fatalf("send failed: %v", err)
 	}
 	fmt.Println("sent message_id:", msgID)
+}
+
+func TestSendMemberPermissionEditedCard(t *testing.T) {
+	LoadConfig()
+
+	detail := ParseEvent(&github.MemberEvent{
+		Action: strPtr("edited"),
+		Member: &github.User{
+			ID:        int64Ptr(36563672),
+			Login:     strPtr("Mmx233"),
+			HTMLURL:   strPtr("https://github.com/Mmx233"),
+			AvatarURL: strPtr("https://avatars.githubusercontent.com/u/36563672?v=4"),
+		},
+		Changes: &github.MemberChanges{
+			Permission: &github.MemberChangesPermission{
+				From: strPtr("write"),
+				To:   strPtr("admin"),
+			},
+		},
+		Sender: &github.User{
+			Login:     strPtr("hangone"),
+			HTMLURL:   strPtr("https://github.com/hangone"),
+			AvatarURL: strPtr("https://avatars.githubusercontent.com/u/56105779?v=4"),
+		},
+		Repo: &github.Repository{
+			FullName: strPtr("NCUHOME/FeishuGitPushBot"),
+			HTMLURL:  strPtr("https://github.com/NCUHOME/FeishuGitPushBot"),
+		},
+	}, "member")
+	detail.EventTime = time.Now().Format(time.RFC3339)
+	detail.RepoName = "NCUHOME/FeishuGitPushBot"
+	detail.RepoURL = "https://github.com/NCUHOME/FeishuGitPushBot"
+
+	ctx := context.Background()
+	card := BuildCard(ctx, "NCUHOME/FeishuGitPushBot", "hangone", "https://github.com/hangone", "", detail)
+
+	msgID, err := SendToChat("", card)
+	if err != nil {
+		t.Fatalf("send failed: %v", err)
+	}
+	fmt.Println("sent member permission edited message_id:", msgID)
 }
 
 // TestSendPRCard 测试 Pull Request 卡片
@@ -168,15 +210,15 @@ func TestSendWorkflowCard(t *testing.T) {
 	InitDB()
 
 	detail := EventDetail{
-		Title:    "✅ Workflow succeeded: CI",
-		RefName:  "main",
-		RefURL:   "https://github.com/NCUHOME/test/tree/main",
-		SHA:      "abc1234",
-		RepoName: "NCUHOME/test",
-		RepoURL:  "https://github.com/NCUHOME/test",
-		URL:      "https://github.com/NCUHOME/test/actions/runs/12345",
-		Text:     "✅ **CI** workflow run succeeded in 2 minutes 30 seconds",
-		Action:   "workflow_run",
+		Title:     "✅ Workflow succeeded: CI",
+		RefName:   "main",
+		RefURL:    "https://github.com/NCUHOME/test/tree/main",
+		SHA:       "abc1234",
+		RepoName:  "NCUHOME/test",
+		RepoURL:   "https://github.com/NCUHOME/test",
+		URL:       "https://github.com/NCUHOME/test/actions/runs/12345",
+		Text:      "✅ **CI** workflow run succeeded in 2 minutes 30 seconds",
+		Action:    "workflow_run",
 		EventTime: time.Now().Format(time.RFC3339),
 	}
 
@@ -250,14 +292,14 @@ func TestOnConflictInsert(t *testing.T) {
 
 	// First insert
 	_, err := DB.NewInsert().Model(&MessageRecord{
-		GithubID:      githubID,
+		GithubID:        githubID,
 		FeishuMessageID: "msg_001",
-		ChatID:        "test_chat",
-		RepoName:      "test/repo",
-		EventType:     "push",
-		Content:       "{}",
-		EventID:       99999,
-		HeadSHA:       "sha_original",
+		ChatID:          "test_chat",
+		RepoName:        "test/repo",
+		EventType:       "push",
+		Content:         "{}",
+		EventID:         99999,
+		HeadSHA:         "sha_original",
 	}).On("CONFLICT (github_id) DO UPDATE").
 		Set("feishu_message_id = EXCLUDED.feishu_message_id").
 		Set("head_sha = EXCLUDED.head_sha").
@@ -269,14 +311,14 @@ func TestOnConflictInsert(t *testing.T) {
 
 	// Second insert (upsert)
 	_, err = DB.NewInsert().Model(&MessageRecord{
-		GithubID:      githubID,
+		GithubID:        githubID,
 		FeishuMessageID: "msg_002",
-		ChatID:        "test_chat",
-		RepoName:      "test/repo",
-		EventType:     "push",
-		Content:       `{"updated":true}`,
-		EventID:       99998,
-		HeadSHA:       "sha_updated",
+		ChatID:          "test_chat",
+		RepoName:        "test/repo",
+		EventType:       "push",
+		Content:         `{"updated":true}`,
+		EventID:         99998,
+		HeadSHA:         "sha_updated",
 	}).On("CONFLICT (github_id) DO UPDATE").
 		Set("feishu_message_id = EXCLUDED.feishu_message_id").
 		Set("head_sha = EXCLUDED.head_sha").

@@ -905,6 +905,123 @@ func mergeRefs(oldText, newText string) string {
 	return strings.Join(names, "\n")
 }
 
+func memberTrackingID(payload map[string]any, repo string) string {
+	memberID := ext(payload, "member", "id")
+	if memberID == "" {
+		memberID = ext(payload, "member", "login")
+	}
+	if repo == "" || memberID == "" {
+		return ""
+	}
+	return fmt.Sprintf("member:%s:%s", repo, memberID)
+}
+
+func mergeMemberDetails(old, new *EventDetail) {
+	new.Text = strings.Join(mergeMemberOperationLines(memberOperationLines(old.Text), memberOperationLines(new.Text)), "\n")
+	new.Title = "👤 Member updates"
+	new.Action = "updated"
+	currentTime := new.EventTime
+	if old.EventTime != "" {
+		new.EventTime = old.EventTime
+	}
+	new.EventTimeEnd = currentTime
+
+	new.EventCount = countMemberOperationLines(new.Text)
+	new.AuthorLogins = mergeUniqueStrings(old.AuthorLogins, new.AuthorLogins)
+	new.AuthorAvatars = mergeUniqueStrings(old.AuthorAvatars, new.AuthorAvatars)
+}
+
+func countMemberOperationLines(text string) int {
+	return len(memberOperationLines(text))
+}
+
+func memberOperationLines(text string) []string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- ") {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) > 0 {
+		return lines
+	}
+	if line := legacyMemberOperationLine(text); line != "" {
+		return []string{line}
+	}
+
+	var parts []string
+	for _, line := range strings.Split(text, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			parts = append(parts, line)
+		}
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return []string{"- " + strings.Join(parts, "; ")}
+}
+
+func mergeMemberOperationLines(oldLines, newLines []string) []string {
+	seen := make(map[string]bool)
+	lines := make([]string, 0, len(oldLines)+len(newLines))
+	for _, line := range append(oldLines, newLines...) {
+		line = strings.TrimSpace(line)
+		if line == "" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func legacyMemberOperationLine(text string) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	action := legacyMemberField(lines, "Action:")
+	member := legacyMemberField(lines, "Member:")
+	if action == "" || member == "" {
+		return ""
+	}
+	line := fmt.Sprintf("- **%s** member **%s**", action, member)
+	if sender := legacyMemberField(lines, "By:"); sender != "" && sender != member {
+		line += fmt.Sprintf(" by **%s**", sender)
+	}
+	return line
+}
+
+func legacyMemberField(lines []string, prefix string) string {
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToLower(line), strings.ToLower(prefix)) {
+			return trimMarkdownBold(strings.TrimSpace(line[len(prefix):]))
+		}
+	}
+	return ""
+}
+
+func trimMarkdownBold(s string) string {
+	s = strings.TrimSpace(s)
+	for strings.HasPrefix(s, "**") && strings.HasSuffix(s, "**") && len(s) >= 4 {
+		s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "**"), "**"))
+	}
+	return s
+}
+
+func mergeUniqueStrings(oldValues, newValues []string) []string {
+	seen := make(map[string]bool)
+	values := make([]string, 0, len(oldValues)+len(newValues))
+	for _, value := range append(oldValues, newValues...) {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		values = append(values, value)
+	}
+	return values
+}
+
 // findParentRecordBySHA 根据 commit SHA 查找同一仓库下 push/create 事件的消息记录
 // 排除已删除的消息记录，避免 CI 事件错误关联到分支删除记录
 func findParentRecordBySHA(ctx context.Context, repo, sha string) *MessageRecord {
@@ -1281,7 +1398,7 @@ func processWebhookEvent(event WebhookEvent) error {
 	case "public":
 		githubID = fmt.Sprintf("public:%s", repo)
 	case "member":
-		githubID = fmt.Sprintf("member:%s:%s:%s", repo, ext(m, "member", "id"), ext(m, "action"))
+		githubID = memberTrackingID(m, repo)
 	case "membership":
 		githubID = fmt.Sprintf("membership:%s:%s:%s:%s", ext(m, "organization", "login"), ext(m, "team", "id"), ext(m, "member", "id"), ext(m, "action"))
 	case "team":
@@ -1347,6 +1464,7 @@ func processWebhookEvent(event WebhookEvent) error {
 		event.EventType != "delete" &&
 		event.EventType != "issue_comment" &&
 		event.EventType != "pull_request_review_comment" &&
+		event.EventType != "member" &&
 		!isCIEvent
 
 	if needDedup {
@@ -1560,6 +1678,24 @@ func processWebhookEvent(event WebhookEvent) error {
 			func(_, new *EventDetail) {}, // 状态直接替换
 			"", &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
 			"Deployment status updated",
+		)
+		if merged {
+			return err
+		}
+	}
+
+	// 4.2b Member 事件：同一仓库同一成员在合并窗口内的权限/成员操作合并为一条
+	if event.EventType == "member" && githubID != "" {
+		merged, err := tryMergeWithExisting(ctx,
+			mergeSearch{
+				githubID:     githubID,
+				githubIDLike: githubID + ":%", // 兼容旧的 action 粒度记录：member:<repo>:<id>:<action>
+				eventType:    "member",
+				withinWindow: true,
+			},
+			mergeMemberDetails,
+			"", &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"Member updates merged",
 		)
 		if merged {
 			return err

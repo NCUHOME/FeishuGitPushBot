@@ -375,9 +375,10 @@ func TestParseEventNewTypes(t *testing.T) {
 			name: "team_add",
 			event: &github.TeamAddEvent{
 				Team: &github.Team{
-					ID:      int64Ptr(200),
-					Name:    strPtr("backend-team"),
-					HTMLURL: strPtr("https://github.com/orgs/test/teams/backend-team"),
+					ID:         int64Ptr(200),
+					Name:       strPtr("backend-team"),
+					HTMLURL:    strPtr("https://github.com/orgs/test/teams/backend-team"),
+					Permission: strPtr("write"),
 				},
 				Repo: &github.Repository{
 					FullName: strPtr("test/repo"),
@@ -390,7 +391,7 @@ func TestParseEventNewTypes(t *testing.T) {
 				},
 			},
 			eventType: "team_add",
-			wantTitle: "👥 Team Added: backend-team",
+			wantTitle: "👥 Team access added",
 		},
 		// PingEvent (ParseEvent doesn't skip, but worker layer will skip)
 		{
@@ -523,6 +524,265 @@ func TestParseRefLifecycleUsesPushEvents(t *testing.T) {
 				t.Fatalf("IsDeleted = %v, want %v", detail.IsDeleted, tt.wantDeleted)
 			}
 		})
+	}
+}
+
+func TestParseTeamAccessEvents(t *testing.T) {
+	t.Run("team access added", func(t *testing.T) {
+		detail := ParseEvent(&github.TeamAddEvent{
+			Team: &github.Team{
+				ID:         int64Ptr(200),
+				Name:       strPtr("backend-team"),
+				HTMLURL:    strPtr("https://github.com/orgs/NCUHOME/teams/backend-team"),
+				Permission: strPtr("write"),
+			},
+			Repo: &github.Repository{
+				FullName: strPtr("NCUHOME/FeishuGitPushBot"),
+				HTMLURL:  strPtr("https://github.com/NCUHOME/FeishuGitPushBot"),
+			},
+			Sender: &github.User{
+				Login:     strPtr("hangone"),
+				HTMLURL:   strPtr("https://github.com/hangone"),
+				AvatarURL: strPtr("https://avatars.githubusercontent.com/u/56105779?v=4"),
+			},
+		}, "team_add")
+
+		if detail.Title != "👥 Team access added" {
+			t.Fatalf("Title = %q", detail.Title)
+		}
+		for _, want := range []string{
+			"- **added** team **[backend-team](https://github.com/orgs/NCUHOME/teams/backend-team)** by **[hangone](https://github.com/hangone)**",
+			"permission to `write`",
+		} {
+			if !strings.Contains(detail.Text, want) {
+				t.Fatalf("Text missing %q: %s", want, detail.Text)
+			}
+		}
+		if detail.URL != "https://github.com/NCUHOME/FeishuGitPushBot/settings/access" {
+			t.Fatalf("URL = %q", detail.URL)
+		}
+		if got := strings.Join(detail.AuthorLogins, ","); got != "hangone" {
+			t.Fatalf("AuthorLogins = %q", got)
+		}
+	})
+
+	t.Run("team access edited", func(t *testing.T) {
+		detail := ParseEvent(&github.TeamEvent{
+			Action: strPtr("edited"),
+			Team: &github.Team{
+				ID:         int64Ptr(200),
+				Name:       strPtr("backend-team"),
+				HTMLURL:    strPtr("https://github.com/orgs/NCUHOME/teams/backend-team"),
+				Permission: strPtr("admin"),
+			},
+			Changes: &github.TeamChange{
+				Repository: &github.TeamRepository{
+					Permissions: &github.TeamPermissions{
+						From: &github.TeamPermissionsFrom{
+							Pull: boolPtr(true),
+							Push: boolPtr(true),
+						},
+					},
+				},
+			},
+			Repo: &github.Repository{
+				FullName: strPtr("NCUHOME/FeishuGitPushBot"),
+				HTMLURL:  strPtr("https://github.com/NCUHOME/FeishuGitPushBot"),
+			},
+			Sender: &github.User{
+				Login:     strPtr("hangone"),
+				HTMLURL:   strPtr("https://github.com/hangone"),
+				AvatarURL: strPtr("https://avatars.githubusercontent.com/u/56105779?v=4"),
+			},
+		}, "team")
+
+		if detail.Title != "👥 Team access edited" {
+			t.Fatalf("Title = %q", detail.Title)
+		}
+		for _, want := range []string{
+			"- **edited** team **[backend-team](https://github.com/orgs/NCUHOME/teams/backend-team)** by **[hangone](https://github.com/hangone)**",
+			"permission: `write` -> `admin`",
+		} {
+			if !strings.Contains(detail.Text, want) {
+				t.Fatalf("Text missing %q: %s", want, detail.Text)
+			}
+		}
+		if detail.URL != "https://github.com/NCUHOME/FeishuGitPushBot/settings/access" {
+			t.Fatalf("URL = %q", detail.URL)
+		}
+		if got := strings.Join(detail.AuthorLogins, ","); got != "hangone" {
+			t.Fatalf("AuthorLogins = %q", got)
+		}
+	})
+}
+
+func TestParseMemberEventIncludesChangeDetails(t *testing.T) {
+	detail := ParseEvent(&github.MemberEvent{
+		Action: strPtr("edited"),
+		Member: &github.User{
+			ID:        int64Ptr(36563672),
+			Login:     strPtr("Mmx233"),
+			HTMLURL:   strPtr("https://github.com/Mmx233"),
+			AvatarURL: strPtr("https://avatars.githubusercontent.com/u/36563672?v=4"),
+		},
+		Changes: &github.MemberChanges{
+			Permission: &github.MemberChangesPermission{
+				From: strPtr("write"),
+				To:   strPtr("admin"),
+			},
+			RoleName: &github.MemberChangesRoleName{
+				From: strPtr("write"),
+				To:   strPtr("admin"),
+			},
+		},
+		Sender: &github.User{
+			Login:     strPtr("hangone"),
+			HTMLURL:   strPtr("https://github.com/hangone"),
+			AvatarURL: strPtr("https://avatars.githubusercontent.com/u/56105779?v=4"),
+		},
+		Repo: &github.Repository{
+			FullName: strPtr("NCUHOME/FeishuGitPushBot"),
+			HTMLURL:  strPtr("https://github.com/NCUHOME/FeishuGitPushBot"),
+		},
+	}, "member")
+
+	if detail.Title != "👤 Member access edited" {
+		t.Fatalf("Title = %q", detail.Title)
+	}
+	for _, want := range []string{
+		"- **edited** member **[Mmx233](https://github.com/Mmx233)** by **[hangone](https://github.com/hangone)**",
+		"permission: `write` -> `admin`",
+		"role_name: `write` -> `admin`",
+	} {
+		if !strings.Contains(detail.Text, want) {
+			t.Fatalf("Text missing %q: %s", want, detail.Text)
+		}
+	}
+	if detail.EventCount != 1 {
+		t.Fatalf("EventCount = %d, want 1", detail.EventCount)
+	}
+	if detail.URL != "https://github.com/NCUHOME/FeishuGitPushBot/settings/access" {
+		t.Fatalf("URL = %q", detail.URL)
+	}
+	if got := strings.Join(detail.AuthorLogins, ","); got != "hangone" {
+		t.Fatalf("AuthorLogins = %q", got)
+	}
+
+	fallbackDetail := ParseEvent(&github.MemberEvent{
+		Action: strPtr("edited"),
+		Member: &github.User{
+			Login:   strPtr("Mmx233"),
+			HTMLURL: strPtr("https://github.com/Mmx233"),
+		},
+		Sender: &github.User{
+			Login:   strPtr("hangone"),
+			HTMLURL: strPtr("https://github.com/hangone"),
+		},
+	}, "member")
+	if fallbackDetail.URL != "https://github.com/Mmx233" {
+		t.Fatalf("fallback URL = %q", fallbackDetail.URL)
+	}
+}
+
+func TestMergeMemberDetails(t *testing.T) {
+	oldDetail := &EventDetail{
+		Title:         "👤 Member added",
+		Text:          "- **added** member **[Mmx233](https://github.com/Mmx233)** by **[hangone](https://github.com/hangone)**",
+		EventTime:     "2026-07-09T01:00:00Z",
+		EventCount:    1,
+		AuthorLogins:  []string{"hangone"},
+		AuthorAvatars: []string{"avatar-hangone"},
+	}
+	newDetail := &EventDetail{
+		Title:         "👤 Member permission edited",
+		Text:          "- **edited** member **[Mmx233](https://github.com/Mmx233)** by **[hangone](https://github.com/hangone)**; permission: `write` -> `admin`",
+		EventTime:     "2026-07-09T01:05:00Z",
+		EventCount:    1,
+		AuthorLogins:  []string{"hangone"},
+		AuthorAvatars: []string{"avatar-hangone"},
+	}
+
+	mergeMemberDetails(oldDetail, newDetail)
+
+	wantText := "- **added** member **[Mmx233](https://github.com/Mmx233)** by **[hangone](https://github.com/hangone)**\n- **edited** member **[Mmx233](https://github.com/Mmx233)** by **[hangone](https://github.com/hangone)**; permission: `write` -> `admin`"
+	if newDetail.Text != wantText {
+		t.Fatalf("Text = %q, want %q", newDetail.Text, wantText)
+	}
+	if newDetail.Title != "👤 Member updates" {
+		t.Fatalf("Title = %q", newDetail.Title)
+	}
+	if newDetail.Action != "updated" {
+		t.Fatalf("Action = %q", newDetail.Action)
+	}
+	if newDetail.EventTime != "2026-07-09T01:00:00Z" || newDetail.EventTimeEnd != "2026-07-09T01:05:00Z" {
+		t.Fatalf("Event time range = %q -> %q", newDetail.EventTime, newDetail.EventTimeEnd)
+	}
+	if newDetail.EventCount != 2 {
+		t.Fatalf("EventCount = %d, want 2", newDetail.EventCount)
+	}
+	if got := strings.Join(newDetail.AuthorLogins, ","); got != "hangone" {
+		t.Fatalf("AuthorLogins = %q", got)
+	}
+}
+
+func TestMergeMemberDetailsNormalizesLegacyAndDeduplicates(t *testing.T) {
+	t.Run("legacy old format counts as one operation", func(t *testing.T) {
+		oldDetail := &EventDetail{
+			Title:     "👤 Member Mmx233: edited",
+			Text:      "Action: **edited**\nMember: **Mmx233**\nBy: **hangone**",
+			EventTime: "2026-07-09T01:00:00Z",
+		}
+		newDetail := &EventDetail{
+			Title:      "👤 Member permission edited",
+			Text:       "- **edited** member **[Mmx233](https://github.com/Mmx233)** by **[hangone](https://github.com/hangone)**; permission: `write` -> `admin`",
+			EventTime:  "2026-07-09T01:05:00Z",
+			EventCount: 1,
+		}
+
+		mergeMemberDetails(oldDetail, newDetail)
+
+		if newDetail.EventCount != 2 {
+			t.Fatalf("EventCount = %d, want 2", newDetail.EventCount)
+		}
+		if !strings.Contains(newDetail.Text, "- **edited** member **Mmx233** by **hangone**") {
+			t.Fatalf("legacy member line not normalized: %s", newDetail.Text)
+		}
+	})
+
+	t.Run("same operation line is idempotent", func(t *testing.T) {
+		line := "- **edited** member **[Mmx233](https://github.com/Mmx233)** by **[hangone](https://github.com/hangone)**; permission: `write` -> `admin`"
+		oldDetail := &EventDetail{Text: line, EventCount: 1}
+		newDetail := &EventDetail{Text: line, EventCount: 1}
+
+		mergeMemberDetails(oldDetail, newDetail)
+
+		if newDetail.Text != line {
+			t.Fatalf("Text = %q, want deduplicated line", newDetail.Text)
+		}
+		if newDetail.EventCount != 1 {
+			t.Fatalf("EventCount = %d, want 1", newDetail.EventCount)
+		}
+	})
+}
+
+func TestMemberTrackingIDFallsBackToLogin(t *testing.T) {
+	numericPayload := map[string]any{
+		"member": map[string]any{
+			"id":    float64(36563672),
+			"login": "Mmx233",
+		},
+	}
+	if got, want := memberTrackingID(numericPayload, "NCUHOME/FeishuGitPushBot"), "member:NCUHOME/FeishuGitPushBot:36563672"; got != want {
+		t.Fatalf("memberTrackingID() = %q, want %q", got, want)
+	}
+
+	payload := map[string]any{
+		"member": map[string]any{
+			"login": "Mmx233",
+		},
+	}
+	if got, want := memberTrackingID(payload, "NCUHOME/FeishuGitPushBot"), "member:NCUHOME/FeishuGitPushBot:Mmx233"; got != want {
+		t.Fatalf("memberTrackingID() = %q, want %q", got, want)
 	}
 }
 
