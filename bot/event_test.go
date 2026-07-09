@@ -667,6 +667,21 @@ func TestParseMemberEventIncludesChangeDetails(t *testing.T) {
 	if got := strings.Join(detail.AuthorLogins, ","); got != "hangone" {
 		t.Fatalf("AuthorLogins = %q", got)
 	}
+
+	fallbackDetail := ParseEvent(&github.MemberEvent{
+		Action: strPtr("edited"),
+		Member: &github.User{
+			Login:   strPtr("Mmx233"),
+			HTMLURL: strPtr("https://github.com/Mmx233"),
+		},
+		Sender: &github.User{
+			Login:   strPtr("hangone"),
+			HTMLURL: strPtr("https://github.com/hangone"),
+		},
+	}, "member")
+	if fallbackDetail.URL != "https://github.com/Mmx233" {
+		t.Fatalf("fallback URL = %q", fallbackDetail.URL)
+	}
 }
 
 func TestMergeMemberDetails(t *testing.T) {
@@ -710,7 +725,57 @@ func TestMergeMemberDetails(t *testing.T) {
 	}
 }
 
+func TestMergeMemberDetailsNormalizesLegacyAndDeduplicates(t *testing.T) {
+	t.Run("legacy old format counts as one operation", func(t *testing.T) {
+		oldDetail := &EventDetail{
+			Title:     "👤 Member Mmx233: edited",
+			Text:      "Action: **edited**\nMember: **Mmx233**\nBy: **hangone**",
+			EventTime: "2026-07-09T01:00:00Z",
+		}
+		newDetail := &EventDetail{
+			Title:      "👤 Member permission edited",
+			Text:       "- **edited** member **[Mmx233](https://github.com/Mmx233)** by **[hangone](https://github.com/hangone)**; permission: `write` -> `admin`",
+			EventTime:  "2026-07-09T01:05:00Z",
+			EventCount: 1,
+		}
+
+		mergeMemberDetails(oldDetail, newDetail)
+
+		if newDetail.EventCount != 2 {
+			t.Fatalf("EventCount = %d, want 2", newDetail.EventCount)
+		}
+		if !strings.Contains(newDetail.Text, "- **edited** member **Mmx233** by **hangone**") {
+			t.Fatalf("legacy member line not normalized: %s", newDetail.Text)
+		}
+	})
+
+	t.Run("same operation line is idempotent", func(t *testing.T) {
+		line := "- **edited** member **[Mmx233](https://github.com/Mmx233)** by **[hangone](https://github.com/hangone)**; permission: `write` -> `admin`"
+		oldDetail := &EventDetail{Text: line, EventCount: 1}
+		newDetail := &EventDetail{Text: line, EventCount: 1}
+
+		mergeMemberDetails(oldDetail, newDetail)
+
+		if newDetail.Text != line {
+			t.Fatalf("Text = %q, want deduplicated line", newDetail.Text)
+		}
+		if newDetail.EventCount != 1 {
+			t.Fatalf("EventCount = %d, want 1", newDetail.EventCount)
+		}
+	})
+}
+
 func TestMemberTrackingIDFallsBackToLogin(t *testing.T) {
+	numericPayload := map[string]any{
+		"member": map[string]any{
+			"id":    float64(36563672),
+			"login": "Mmx233",
+		},
+	}
+	if got, want := memberTrackingID(numericPayload, "NCUHOME/FeishuGitPushBot"), "member:NCUHOME/FeishuGitPushBot:36563672"; got != want {
+		t.Fatalf("memberTrackingID() = %q, want %q", got, want)
+	}
+
 	payload := map[string]any{
 		"member": map[string]any{
 			"login": "Mmx233",

@@ -813,7 +813,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 		}
 		action := e.GetAction()
 		if repo := e.GetRepo(); repo != nil {
-			senderLogin, senderURL := teamEventSender(e.GetSender(), team.GetName())
+			senderLogin, senderURL := teamEventSender(e.GetSender())
 			d.Title = formatTeamAccessEventTitle(action, e.GetChanges())
 			d.Text = formatTeamAccessOperationLine(action, team.GetName(), team.GetHTMLURL(), senderLogin, senderURL, formatTeamAccessChangeDetails(team, e.GetChanges()))
 			d.URL = repoSettingsAccessURL(repo.GetHTMLURL())
@@ -843,8 +843,11 @@ func ParseEvent(event any, eventType string) EventDetail {
 		}
 		d.Text = formatMemberOperationLine(e.GetAction(), member.GetLogin(), member.GetHTMLURL(), senderLogin, senderURL, e.GetChanges())
 		d.Action = e.GetAction()
+		d.URL = member.GetHTMLURL()
 		if repo := e.GetRepo(); repo != nil {
-			d.URL = repoSettingsAccessURL(repo.GetHTMLURL())
+			if url := repoSettingsAccessURL(repo.GetHTMLURL()); url != "" {
+				d.URL = url
+			}
 		}
 		d.EventCount = 1
 		if sender := e.GetSender(); sender != nil {
@@ -1399,7 +1402,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 			return d
 		}
 		d.Action = "added"
-		senderLogin, senderURL := teamEventSender(e.GetSender(), team.GetName())
+		senderLogin, senderURL := teamEventSender(e.GetSender())
 		if repo := e.GetRepo(); repo != nil {
 			d.Title = "👥 Team access added"
 			d.Text = formatTeamAccessOperationLine("added", team.GetName(), team.GetHTMLURL(), senderLogin, senderURL, formatTeamAccessAddedDetails(team))
@@ -1540,8 +1543,8 @@ func repoSettingsAccessURL(repoURL string) string {
 	return strings.TrimRight(repoURL, "/") + "/settings/access"
 }
 
-func teamEventSender(sender *github.User, teamName string) (string, string) {
-	if sender == nil || sender.GetLogin() == teamName {
+func teamEventSender(sender *github.User) (string, string) {
+	if sender == nil {
 		return "", ""
 	}
 	return sender.GetLogin(), sender.GetHTMLURL()
@@ -1562,7 +1565,7 @@ func formatTeamAccessOperationLine(action, teamName, teamURL, senderLogin, sende
 		action = "updated"
 	}
 	line := fmt.Sprintf("- **%s** team %s", action, boldMarkdownLink(teamName, teamURL))
-	if senderLogin != "" && senderLogin != teamName {
+	if senderLogin != "" {
 		line += fmt.Sprintf(" by %s", boldMarkdownLink(senderLogin, senderURL))
 	}
 	if len(details) > 0 {

@@ -917,26 +917,8 @@ func memberTrackingID(payload map[string]any, repo string) string {
 }
 
 func mergeMemberDetails(old, new *EventDetail) {
-	oldCount := old.EventCount
-	if oldCount == 0 {
-		oldCount = countMemberOperationLines(old.Text)
-	}
-	newCount := new.EventCount
-	if newCount == 0 {
-		newCount = countMemberOperationLines(new.Text)
-	}
-	if newCount == 0 && new.Text != "" {
-		newCount = 1
-	}
-
-	if old.Text != "" {
-		if new.Text != "" {
-			new.Text = old.Text + "\n" + new.Text
-		} else {
-			new.Text = old.Text
-		}
-	}
-	new.Title = memberMergeTitle(new)
+	new.Text = strings.Join(mergeMemberOperationLines(memberOperationLines(old.Text), memberOperationLines(new.Text)), "\n")
+	new.Title = "👤 Member updates"
 	new.Action = "updated"
 	currentTime := new.EventTime
 	if old.EventTime != "" {
@@ -944,23 +926,87 @@ func mergeMemberDetails(old, new *EventDetail) {
 	}
 	new.EventTimeEnd = currentTime
 
-	new.EventCount = oldCount + newCount
+	new.EventCount = countMemberOperationLines(new.Text)
 	new.AuthorLogins = mergeUniqueStrings(old.AuthorLogins, new.AuthorLogins)
 	new.AuthorAvatars = mergeUniqueStrings(old.AuthorAvatars, new.AuthorAvatars)
 }
 
-func memberMergeTitle(detail *EventDetail) string {
-	return "👤 Member updates"
+func countMemberOperationLines(text string) int {
+	return len(memberOperationLines(text))
 }
 
-func countMemberOperationLines(text string) int {
-	count := 0
-	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
-		if strings.TrimSpace(line) != "" {
-			count++
+func memberOperationLines(text string) []string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- ") {
+			lines = append(lines, line)
 		}
 	}
-	return count
+	if len(lines) > 0 {
+		return lines
+	}
+	if line := legacyMemberOperationLine(text); line != "" {
+		return []string{line}
+	}
+
+	var parts []string
+	for _, line := range strings.Split(text, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			parts = append(parts, line)
+		}
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return []string{"- " + strings.Join(parts, "; ")}
+}
+
+func mergeMemberOperationLines(oldLines, newLines []string) []string {
+	seen := make(map[string]bool)
+	lines := make([]string, 0, len(oldLines)+len(newLines))
+	for _, line := range append(oldLines, newLines...) {
+		line = strings.TrimSpace(line)
+		if line == "" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func legacyMemberOperationLine(text string) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	action := legacyMemberField(lines, "Action:")
+	member := legacyMemberField(lines, "Member:")
+	if action == "" || member == "" {
+		return ""
+	}
+	line := fmt.Sprintf("- **%s** member **%s**", action, member)
+	if sender := legacyMemberField(lines, "By:"); sender != "" && sender != member {
+		line += fmt.Sprintf(" by **%s**", sender)
+	}
+	return line
+}
+
+func legacyMemberField(lines []string, prefix string) string {
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToLower(line), strings.ToLower(prefix)) {
+			return trimMarkdownBold(strings.TrimSpace(line[len(prefix):]))
+		}
+	}
+	return ""
+}
+
+func trimMarkdownBold(s string) string {
+	s = strings.TrimSpace(s)
+	for strings.HasPrefix(s, "**") && strings.HasSuffix(s, "**") && len(s) >= 4 {
+		s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "**"), "**"))
+	}
+	return s
 }
 
 func mergeUniqueStrings(oldValues, newValues []string) []string {
