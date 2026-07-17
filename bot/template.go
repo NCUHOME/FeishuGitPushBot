@@ -1718,14 +1718,17 @@ func splitPushTextGroups(text string) []string {
 	return groups
 }
 
+// pushVisibleCommits 折叠前直接展示的 commit 条数；commit 数达到该值才折叠其余条目（少量提交无需折叠）
+const pushVisibleCommits = 5
+
 func addPushMarkdown(card *Card, detail EventDetail) {
 	addGroup := func(text string) {
 		commits := splitCommits(text)
-		if len(commits) > 3 {
-			visible := strings.Join(commits[:3], "<br>")
-			remaining := strings.Join(commits[3:], "<br>")
+		if len(commits) >= pushVisibleCommits {
+			visible := strings.Join(commits[:pushVisibleCommits], "<br>")
+			remaining := strings.Join(commits[pushVisibleCommits:], "<br>")
 			card.AddMarkdown(visible)
-			card.AddCollapsiblePanel(fmt.Sprintf("📝 展开查看其余 %d 条提交", len(commits)-3), remaining)
+			card.AddCollapsiblePanel(fmt.Sprintf("📝 展开查看其余 %d 条提交", len(commits)-pushVisibleCommits), remaining)
 			return
 		}
 		card.AddMarkdown(text)
@@ -1746,9 +1749,9 @@ func addPushMarkdown(card *Card, detail EventDetail) {
 	if commitCount == 0 {
 		commitCount = detail.EventCount
 	}
-	if commitCount > 3 {
+	if commitCount >= pushVisibleCommits {
 		commits := splitCommits(detail.Text)
-		if len(commits) > 3 {
+		if len(commits) >= pushVisibleCommits {
 			addGroup(detail.Text)
 			return
 		}
