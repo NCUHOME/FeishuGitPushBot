@@ -176,12 +176,14 @@ type mergeSearch struct {
 // search: 搜索条件
 // mergeFn: 合并策略，参数 (old, new *EventDetail)，可就地修改 new
 // headSHA: 非空时更新记录的 head_sha 字段（用于 push 合并后保持 SHA 关联）
+// eventID: 最新 Webhook 事件 ID，供后续图片刷新按最新负载重建卡片
 // 返回 (merged bool, err error)，merged=true 时调用方应立即返回
 func tryMergeWithExisting(
 	ctx context.Context,
 	search mergeSearch,
 	mergeFn func(old, new *EventDetail),
 	headSHA string,
+	eventID uint64,
 	detail *EventDetail,
 	repo, repoUrl, sender, senderUrl, avatarUrl, logMsg string,
 ) (bool, error) {
@@ -217,7 +219,10 @@ func tryMergeWithExisting(
 	}
 
 	if err := q.Order("id DESC").Limit(1).Scan(ctx); err != nil {
-		return false, nil // 未找到可合并的记录
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil // 未找到可合并的记录
+		}
+		return true, fmt.Errorf("failed to find existing message: %w", err)
 	}
 
 	// 合并内容
@@ -231,43 +236,65 @@ func tryMergeWithExisting(
 	buildCancel()
 
 	if err := UpdateMessage(record.FeishuMessageID, card); err != nil {
-		return false, fmt.Errorf("failed to update message: %w", err)
+		if isMessageUpdateExpired(err) {
+			return false, nil
+		}
+		return true, fmt.Errorf("failed to update message: %w", err)
 	}
 
 	// 更新数据库记录
 	detailJson, _ := json.Marshal(detail)
+	imageStatus := "done"
+	allAvatars := detail.AuthorAvatars
+	if len(allAvatars) == 0 && avatarUrl != "" {
+		allAvatars = []string{avatarUrl}
+	}
+	for _, url := range allAvatars {
+		if GetImageKey(ctx, url) == "" {
+			imageStatus = "pending"
+			break
+		}
+	}
 	updateQ := DB.NewUpdate().Model(&record).
 		Set("content = ?", string(detailJson)).
 		Set("card_string = ?", card.String()).
+		Set("image_status = ?", imageStatus).
+		Set("avatar_url = ?", avatarUrl).
+		Set("sender = ?", sender).
+		Set("sender_url = ?", senderUrl).
+		Set("avatar_url2 = ?", avatarUrl).
 		Set("updated_at = ?", time.Now()).
 		WherePK()
 	if headSHA != "" {
 		updateQ = updateQ.Set("head_sha = ?", headSHA)
 	}
-	_, _ = updateQ.Exec(ctx)
+	if eventID != 0 {
+		updateQ = updateQ.Set("event_id = ?", eventID)
+	}
+	if _, err := updateQ.Exec(ctx); err != nil {
+		return true, fmt.Errorf("failed to persist updated message: %w", err)
+	}
 
 	slog.Info(logMsg, "github_id", record.GithubID)
 	return true, nil
 }
 
-// tryDedup 尝试去重：如果合并窗口内已有相同 githubID + eventType 的记录，
-// 静默更新内容并跳过发送新消息。返回 true 表示已去重（调用方应立即返回）。
-func tryDedup(ctx context.Context, githubID, eventType string, detail *EventDetail) bool {
-	var record MessageRecord
-	if err := DB.NewSelect().Model(&record).
-		Where("github_id = ?", githubID).
-		Where("event_type = ?", eventType).
-		Where("updated_at > ?", time.Now().Add(-getMergeWindow())).
-		Order("id DESC").Limit(1).Scan(ctx); err != nil {
+func shouldUpdateWithinMergeWindow(eventType string, isCIEvent bool) bool {
+	return eventType != "push" &&
+		eventType != "create" &&
+		eventType != "delete" &&
+		eventType != "issue_comment" &&
+		eventType != "pull_request_review_comment" &&
+		eventType != "member" &&
+		!isCIEvent
+}
+
+func isMessageUpdateExpired(err error) bool {
+	if err == nil {
 		return false
 	}
-	detailJson, _ := json.Marshal(detail)
-	_, _ = DB.NewUpdate().Model(&record).
-		Set("content = ?", string(detailJson)).
-		Set("updated_at = ?", time.Now()).
-		WherePK().Exec(ctx)
-	slog.Info("Event deduplicated", "github_id", githubID, "event_type", eventType)
-	return true
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "230031") || strings.Contains(message, "expired")
 }
 
 // extractCIStatus 从 CI 事件负载中提取 status 和 conclusion
@@ -1456,20 +1483,17 @@ func processWebhookEvent(event WebhookEvent) error {
 		return nil
 	}
 
-	// 3.6 通用去重：合并窗口内同一 githubID + eventType 的事件只保留一次
-	// 跳过已有专门合并逻辑的事件（push, create, delete, issue_comment/PR comment 的 created）
-	needDedup := githubID != "" &&
-		event.EventType != "push" &&
-		event.EventType != "create" &&
-		event.EventType != "delete" &&
-		event.EventType != "issue_comment" &&
-		event.EventType != "pull_request_review_comment" &&
-		event.EventType != "member" &&
-		!isCIEvent
-
-	if needDedup {
-		if tryDedup(ctx, githubID, event.EventType, &detail) {
-			return nil
+	// 3.6 合并窗口内同一 GitHub 对象直接更新原卡片。issues.opened 和
+	// issues.edited 共用追踪 ID，因此编辑会 Patch 原来的 New Issue 消息。
+	if githubID != "" && shouldUpdateWithinMergeWindow(event.EventType, isCIEvent) {
+		updated, err := tryMergeWithExisting(ctx,
+			mergeSearch{githubID: githubID, eventType: event.EventType, withinWindow: true},
+			func(_, _ *EventDetail) {},
+			"", event.ID, &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"Existing card updated within merge window",
+		)
+		if updated {
+			return err
 		}
 	}
 
@@ -1652,7 +1676,7 @@ func processWebhookEvent(event WebhookEvent) error {
 		merged, err := tryMergeWithExisting(ctx,
 			mergeSearch{githubID: githubID, eventType: "release"},
 			func(_, new *EventDetail) {}, // Release 直接替换，无需合并
-			"", &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"", event.ID, &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
 			"Release card updated",
 		)
 		if merged {
@@ -1665,7 +1689,7 @@ func processWebhookEvent(event WebhookEvent) error {
 		merged, err := tryMergeWithExisting(ctx,
 			mergeSearch{githubID: githubID, eventType: "deployment"},
 			func(_, new *EventDetail) {}, // Deployment 直接替换
-			"", &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"", event.ID, &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
 			"Deployment card updated",
 		)
 		if merged {
@@ -1676,7 +1700,7 @@ func processWebhookEvent(event WebhookEvent) error {
 		merged, err := tryMergeWithExisting(ctx,
 			mergeSearch{githubID: githubID, withinWindow: true},
 			func(_, new *EventDetail) {}, // 状态直接替换
-			"", &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"", event.ID, &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
 			"Deployment status updated",
 		)
 		if merged {
@@ -1694,7 +1718,7 @@ func processWebhookEvent(event WebhookEvent) error {
 				withinWindow: true,
 			},
 			mergeMemberDetails,
-			"", &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"", event.ID, &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
 			"Member updates merged",
 		)
 		if merged {
@@ -1718,7 +1742,7 @@ func processWebhookEvent(event WebhookEvent) error {
 				}
 				new.EventTimeEnd = currentTime // 最新事件时间作为结束时间
 			},
-			sha, &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			sha, event.ID, &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
 			"Push combined",
 		)
 		if merged {
@@ -1755,7 +1779,7 @@ func processWebhookEvent(event WebhookEvent) error {
 				}
 				new.EventTimeEnd = currentTime
 			},
-			"", &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"", event.ID, &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
 			"Branch deletions combined",
 		)
 		if merged {
@@ -1787,7 +1811,7 @@ func processWebhookEvent(event WebhookEvent) error {
 				}
 				new.EventTimeEnd = currentTime
 			},
-			"", &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"", event.ID, &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
 			"Tag deletions combined",
 		)
 		if merged {
@@ -1819,7 +1843,7 @@ func processWebhookEvent(event WebhookEvent) error {
 				}
 				new.EventTimeEnd = currentTime
 			},
-			"", &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"", event.ID, &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
 			"Branch deletions combined",
 		)
 		if merged {
@@ -1844,7 +1868,7 @@ func processWebhookEvent(event WebhookEvent) error {
 				}
 				new.EventTimeEnd = currentTime
 			},
-			"", &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"", event.ID, &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
 			"Tag creations combined",
 		)
 		if merged {
@@ -1870,7 +1894,7 @@ func processWebhookEvent(event WebhookEvent) error {
 				new.EventTimeEnd = currentTime
 				new.EventCount = old.EventCount + 1
 			},
-			"", &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"", event.ID, &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
 			"Comments merged",
 		)
 		if merged {
@@ -1894,7 +1918,7 @@ func processWebhookEvent(event WebhookEvent) error {
 				new.EventTimeEnd = currentTime
 				new.EventCount = old.EventCount + 1
 			},
-			"", &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
+			"", event.ID, &detail, repo, repoUrl, sender, senderUrl, avatarUrl,
 			"PR comments merged",
 		)
 		if merged {
@@ -2079,12 +2103,6 @@ func processWebhookEvent(event WebhookEvent) error {
 		replyCard.AddMarkdown(detail.ExtraReply)
 		_, _ = ReplyToMessage(msgID, replyCard)
 	}
-	if detail.FoldableBody != "" && msgID != "" {
-		replyCard := NewCard()
-		replyCard.AddMarkdown(detail.FoldableBody)
-		_, _ = ReplyToMessage(msgID, replyCard)
-	}
-
 	// 7. 保存记录
 	if githubID != "" && msgID != "" {
 		detailJson, _ := json.Marshal(detail)
@@ -2295,7 +2313,7 @@ func refreshOneImage(record MessageRecord) {
 		slog.Error("Image refresh: failed to update message card",
 			"message_id", record.FeishuMessageID, "error", err)
 		// 飞书消息超过 14 天不可更新，标记为完成避免无限重试
-		if strings.Contains(err.Error(), "230031") || strings.Contains(err.Error(), "expired") {
+		if isMessageUpdateExpired(err) {
 			_, _ = DB.NewUpdate().Model(&record).Set("image_status = ?", "done").WherePK().Exec(context.Background())
 		}
 		return

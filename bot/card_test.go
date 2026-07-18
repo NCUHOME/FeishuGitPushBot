@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -467,4 +468,138 @@ func TestEscapeCodeHTML(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestSplitMarkdownForCardUsesFivePlusFiveThreshold(t *testing.T) {
+	nineLines := strings.Join([]string{"1", "2", "3", "4", "5", "6", "7", "8", "9"}, "\n")
+	visible, folded, foldedLines := splitMarkdownForCard(nineLines)
+	assert.Equal(t, nineLines, visible)
+	assert.Empty(t, folded)
+	assert.Zero(t, foldedLines)
+
+	tenLines := strings.Join([]string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}, "\n")
+	visible, folded, foldedLines = splitMarkdownForCard(tenLines)
+	assert.Equal(t, "1\n2\n3\n4\n5", visible)
+	assert.Equal(t, "6\n7\n8\n9\n10", folded)
+	assert.Equal(t, 5, foldedLines)
+}
+
+func TestSplitMarkdownForCardIgnoresBlankLinesAndSupportsHardBreaks(t *testing.T) {
+	content := "1<br><br>2<br>3<br>4<br>5<br><br>6<br>7<br>8<br>9<br>10"
+	visible, folded, foldedLines := splitMarkdownForCard(content)
+
+	assert.Equal(t, "1<br><br>2<br>3<br>4<br>5", visible)
+	assert.Equal(t, "6<br>7<br>8<br>9<br>10", folded)
+	assert.Equal(t, 5, foldedLines)
+}
+
+func TestSplitCardMarkdownKeepsHardBreakLiteralInsideFence(t *testing.T) {
+	lines := splitCardMarkdown("```html\n<div><br>text</div>\n```")
+	if assert.Len(t, lines, 3) {
+		assert.Equal(t, "<div><br>text</div>", lines[1].text)
+	}
+}
+
+func TestSplitCardMarkdownKeepsHardBreakLiteralInsideInlineCode(t *testing.T) {
+	lines := splitCardMarkdown("use `<br>` here<br>next")
+	if assert.Len(t, lines, 2) {
+		assert.Equal(t, "use `<br>` here", lines[0].text)
+		assert.Equal(t, "next", lines[1].text)
+	}
+}
+
+func TestAddMarkdownFoldsTenLines(t *testing.T) {
+	card := NewCard()
+	card.AddMarkdown(strings.Join([]string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}, "\n"))
+
+	if assert.Len(t, card.Body.Elements, 2) {
+		visible := card.Body.Elements[0].(map[string]any)
+		assert.Equal(t, "markdown", visible["tag"])
+		assert.Equal(t, "1\n2\n3\n4\n5", visible["content"])
+
+		panel := card.Body.Elements[1].(map[string]any)
+		assert.Equal(t, "collapsible_panel", panel["tag"])
+		header := panel["header"].(map[string]any)["title"].(map[string]string)
+		assert.Equal(t, "📝 展开查看其余 5 行", header["content"])
+	}
+}
+
+func TestAddMarkdownKeepsFencedCodeValidAcrossFold(t *testing.T) {
+	content := "intro\n```go\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\n```"
+	card := NewCard()
+	card.AddMarkdown(content)
+
+	if assert.Len(t, card.Body.Elements, 2) {
+		visible := card.Body.Elements[0].(map[string]any)["content"].(string)
+		assert.Equal(t, "intro\n```go\nline 1\nline 2\nline 3\nline 4\n```", visible)
+
+		panel := card.Body.Elements[1].(map[string]any)
+		elements := panel["elements"].([]any)
+		folded := elements[0].(map[string]any)["content"].(string)
+		assert.Equal(t, "```go\nline 5\nline 6\nline 7\nline 8\nline 9\n```", folded)
+	}
+}
+
+func TestPushMarkdownOnlyFoldsWithFiveRemainingCommits(t *testing.T) {
+	makeDetail := func(count int) EventDetail {
+		commits := make([]string, count)
+		for i := range commits {
+			commits[i] = fmt.Sprintf("commit %d", i+1)
+		}
+		return EventDetail{Action: "push", Text: joinCommits(commits), CommitCount: count}
+	}
+	countPanels := func(card *Card) int {
+		count := 0
+		for _, element := range card.Body.Elements {
+			if value, ok := element.(map[string]any); ok && value["tag"] == "collapsible_panel" {
+				count++
+			}
+		}
+		return count
+	}
+
+	nine := NewCard()
+	addPushMarkdown(nine, makeDetail(9))
+	assert.Zero(t, countPanels(nine))
+
+	ten := NewCard()
+	addPushMarkdown(ten, makeDetail(10))
+	assert.Equal(t, 1, countPanels(ten))
+	assert.Equal(t, "commit 1<br>commit 2<br>commit 3<br>commit 4<br>commit 5", ten.Body.Elements[0].(map[string]any)["content"])
+}
+
+func TestPushMarkdownFoldThresholdSpansMergedPushGroups(t *testing.T) {
+	first := []string{"a1", "a2", "a3", "a4", "a5", "a6"}
+	second := []string{"b1", "b2", "b3", "b4"}
+	detail := EventDetail{
+		Action: "push",
+		Text:   joinCommits(first) + pushGroupSeparator + joinCommits(second),
+	}
+
+	card := NewCard()
+	addPushMarkdown(card, detail)
+
+	panels := 0
+	for _, element := range card.Body.Elements {
+		if value, ok := element.(map[string]any); ok && value["tag"] == "collapsible_panel" {
+			panels++
+		}
+	}
+	assert.Equal(t, 1, panels)
+	assert.Equal(t, "a1<br>a2<br>a3<br>a4<br>a5", card.Body.Elements[0].(map[string]any)["content"])
+}
+
+func TestShouldUpdateWithinMergeWindow(t *testing.T) {
+	assert.True(t, shouldUpdateWithinMergeWindow("issues", false), "Issue edits should patch an opened Issue card")
+	assert.True(t, shouldUpdateWithinMergeWindow("pull_request", false))
+	assert.False(t, shouldUpdateWithinMergeWindow("issue_comment", false))
+	assert.False(t, shouldUpdateWithinMergeWindow("push", false))
+	assert.False(t, shouldUpdateWithinMergeWindow("workflow_run", true))
+}
+
+func TestIsMessageUpdateExpired(t *testing.T) {
+	assert.False(t, isMessageUpdateExpired(nil))
+	assert.True(t, isMessageUpdateExpired(fmt.Errorf("update message failed code=230031")))
+	assert.True(t, isMessageUpdateExpired(fmt.Errorf("message has EXPIRED")))
+	assert.False(t, isMessageUpdateExpired(fmt.Errorf("temporary network failure")))
 }
