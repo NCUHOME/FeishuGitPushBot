@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const workflowJobRescheduleDelay = 15 * time.Second
+
 // StartWorker 启动消息队列处理工作者和图片刷新任务
 func StartWorker() {
 	if DB == nil {
@@ -71,7 +73,10 @@ func claimNextWebhookEvent(ctx context.Context) (*WebhookEvent, error) {
 		WHERE id = (
 			SELECT id
 			FROM webhook_events
-			WHERE status = 'pending'
+			WHERE (
+					status = 'pending'
+					AND updated_at <= NOW()
+				)
 				OR (
 					status = 'failed'
 					AND retry_count < 5
@@ -87,6 +92,10 @@ func claimNextWebhookEvent(ctx context.Context) (*WebhookEvent, error) {
 		return nil, err
 	}
 	return &event, nil
+}
+
+func nextWorkflowJobRetryAt(now time.Time) time.Time {
+	return now.Add(workflowJobRescheduleDelay)
 }
 
 func webhookMergeLockKey(eventType string, detail EventDetail, repo string) string {
@@ -375,6 +384,18 @@ func workflowRunAttemptID(m map[string]any) string {
 	return fmt.Sprintf("%s:attempt:%d", baseID, attempt)
 }
 
+func workflowJobAttempt(m map[string]any) int {
+	attemptStr := ext(m, "workflow_job", "run_attempt")
+	if attemptStr == "" {
+		return 1
+	}
+	attempt, err := strconv.Atoi(attemptStr)
+	if err != nil || attempt <= 0 {
+		return 1
+	}
+	return attempt
+}
+
 func buildCardWithTimeout(ctx context.Context, repo, sender, senderUrl, avatarUrl string, detail EventDetail) (*Card, error) {
 	buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer buildCancel()
@@ -519,20 +540,65 @@ func findWorkflowRunRecordForJob(ctx context.Context, repo string, m map[string]
 		return nil
 	}
 	baseID := "wf:" + runID
-	var record MessageRecord
-	q := DB.NewSelect().Model(&record).
+	var records []MessageRecord
+	attemptPattern := escapeSQLLikePattern(baseID) + ":attempt:%"
+	if err := DB.NewSelect().Model(&records).
 		Where("repo_name = ?", repo).
-		Where("event_type = ?", "workflow_run")
-	if attempt := ext(m, "workflow_job", "run_attempt"); attempt != "" && attempt != "1" {
-		q = q.Where("github_id = ?", fmt.Sprintf("%s:attempt:%s", baseID, attempt))
-	} else {
-		attemptPattern := escapeSQLLikePattern(baseID) + ":attempt:%"
-		q = q.Where("(github_id = ? OR github_id LIKE ? ESCAPE '\\')", baseID, attemptPattern)
+		Where("event_type = ?", "workflow_run").
+		Where("(github_id = ? OR github_id LIKE ? ESCAPE '\\')", baseID, attemptPattern).
+		Order("updated_at DESC").
+		Order("id DESC").
+		Scan(ctx); err != nil {
+		return nil
 	}
-	if err := q.Order("updated_at DESC").Order("id DESC").Limit(1).Scan(ctx); err == nil {
-		return &record
+	return selectWorkflowRunRecordForJob(records, baseID, workflowJobAttempt(m), time.Now())
+}
+
+func selectWorkflowRunRecordForJob(records []MessageRecord, baseID string, jobAttempt int, now time.Time) *MessageRecord {
+	if baseID == "" {
+		return nil
 	}
-	return nil
+	if jobAttempt <= 0 {
+		jobAttempt = 1
+	}
+	exactID := baseID
+	if jobAttempt > 1 {
+		exactID = fmt.Sprintf("%s:attempt:%d", baseID, jobAttempt)
+	}
+	for i := range records {
+		if records[i].GithubID == exactID {
+			return &records[i]
+		}
+	}
+
+	cutoff := now.Add(-getMergeWindow())
+	var fallback *MessageRecord
+	for i := range records {
+		recordAttempt, ok := workflowRunRecordAttempt(records[i].GithubID, baseID)
+		if !ok || recordAttempt > jobAttempt || !records[i].UpdatedAt.After(cutoff) {
+			continue
+		}
+		if fallback == nil || records[i].UpdatedAt.After(fallback.UpdatedAt) ||
+			(records[i].UpdatedAt.Equal(fallback.UpdatedAt) && records[i].ID > fallback.ID) {
+			fallback = &records[i]
+		}
+	}
+	return fallback
+}
+
+func workflowRunRecordAttempt(githubID, baseID string) (int, bool) {
+	if githubID == baseID {
+		return 1, true
+	}
+	prefix := baseID + ":attempt:"
+	if !strings.HasPrefix(githubID, prefix) {
+		return 0, false
+	}
+	attempt, err := strconv.Atoi(strings.TrimPrefix(githubID, prefix))
+	if err != nil || attempt <= 0 {
+		return 0, false
+	}
+	return attempt, true
 }
 
 func escapeSQLLikePattern(pattern string) string {
@@ -1564,12 +1630,15 @@ func processWebhookEvent(event WebhookEvent) error {
 		}
 
 		if event.RescheduleCount < 5 {
-			slog.Info("Rescheduling workflow job, waiting for workflow_run", "github_id", githubID, "run_id", ext(m, "workflow_job", "run_id"), "reschedule", event.RescheduleCount+1)
-			_, _ = DB.NewUpdate().Model(&event).
+			retryAt := nextWorkflowJobRetryAt(time.Now())
+			slog.Info("Rescheduling workflow job, waiting for workflow_run", "github_id", githubID, "run_id", ext(m, "workflow_job", "run_id"), "reschedule", event.RescheduleCount+1, "retry_at", retryAt)
+			if _, err := DB.NewUpdate().Model(&event).
 				Set("status = ?", "pending").
 				Set("reschedule_count = reschedule_count + 1").
-				Set("updated_at = ?", time.Now()).
-				WherePK().Exec(ctx)
+				Set("updated_at = ?", retryAt).
+				WherePK().Exec(ctx); err != nil {
+				return fmt.Errorf("failed to reschedule workflow job: %w", err)
+			}
 			return nil
 		}
 

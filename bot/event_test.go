@@ -1304,6 +1304,99 @@ func TestWorkflowRunAttemptIDSupportsIntegerPayloadValues(t *testing.T) {
 	}
 }
 
+func TestNextWorkflowJobRetryAtAddsDelay(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 14, 44, 1, 0, time.UTC)
+	got := nextWorkflowJobRetryAt(now)
+	if want := now.Add(15 * time.Second); !got.Equal(want) {
+		t.Fatalf("nextWorkflowJobRetryAt() = %s, want %s", got, want)
+	}
+}
+
+func TestWorkflowJobAttemptSupportsPayloadValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload map[string]any
+		want    int
+	}{
+		{name: "float", payload: map[string]any{"workflow_job": map[string]any{"run_attempt": float64(2)}}, want: 2},
+		{name: "integer", payload: map[string]any{"workflow_job": map[string]any{"run_attempt": int64(3)}}, want: 3},
+		{name: "missing", payload: map[string]any{"workflow_job": map[string]any{}}, want: 1},
+		{name: "invalid", payload: map[string]any{"workflow_job": map[string]any{"run_attempt": "invalid"}}, want: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := workflowJobAttempt(tt.payload); got != tt.want {
+				t.Fatalf("workflowJobAttempt() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSelectWorkflowRunRecordForJobPrefersExactAttempt(t *testing.T) {
+	previousWindow := C.Events.MergeWindow
+	C.Events.MergeWindow = 15
+	t.Cleanup(func() { C.Events.MergeWindow = previousWindow })
+
+	now := time.Date(2026, time.July, 18, 14, 47, 7, 0, time.UTC)
+	records := []MessageRecord{
+		{GithubID: "wf:29648492855:attempt:2", FeishuMessageID: "previous-message", UpdatedAt: now},
+		{GithubID: "wf:29648492855:attempt:3", FeishuMessageID: "exact-message", UpdatedAt: now.Add(-time.Minute)},
+	}
+
+	got := selectWorkflowRunRecordForJob(records, "wf:29648492855", 3, now)
+	if got == nil || got.FeishuMessageID != "exact-message" {
+		t.Fatalf("selected record = %#v, want exact attempt", got)
+	}
+}
+
+func TestSelectWorkflowRunRecordForJobFallsBackToRecentEarlierAttempt(t *testing.T) {
+	previousWindow := C.Events.MergeWindow
+	C.Events.MergeWindow = 15
+	t.Cleanup(func() { C.Events.MergeWindow = previousWindow })
+
+	now := time.Date(2026, time.July, 18, 14, 44, 1, 0, time.UTC)
+	records := []MessageRecord{
+		{GithubID: "wf:29648492855:attempt:2", FeishuMessageID: "exact-attempt", UpdatedAt: now},
+		{GithubID: "wf:29648492855", FeishuMessageID: "tag-topic-reply", UpdatedAt: now.Add(-time.Minute)},
+	}
+
+	got := selectWorkflowRunRecordForJob(records, "wf:29648492855", 2, now)
+	if got == nil || got.FeishuMessageID != "exact-attempt" {
+		t.Fatalf("selected record = %#v, want exact attempt 2", got)
+	}
+
+	got = selectWorkflowRunRecordForJob(records, "wf:29648492855", 1, now)
+	if got == nil || got.FeishuMessageID != "tag-topic-reply" {
+		t.Fatalf("selected record = %#v, want base attempt reply", got)
+	}
+
+	records = []MessageRecord{
+		{GithubID: "wf:29648492855:attempt:2", FeishuMessageID: "attempt-2-reply", UpdatedAt: now.Add(-time.Minute)},
+	}
+	got = selectWorkflowRunRecordForJob(records, "wf:29648492855", 3, now)
+	if got == nil || got.FeishuMessageID != "attempt-2-reply" {
+		t.Fatalf("selected record = %#v, want recent earlier attempt", got)
+	}
+}
+
+func TestSelectWorkflowRunRecordForJobRejectsFutureAndStaleFallbacks(t *testing.T) {
+	previousWindow := C.Events.MergeWindow
+	C.Events.MergeWindow = 15
+	t.Cleanup(func() { C.Events.MergeWindow = previousWindow })
+
+	now := time.Date(2026, time.July, 18, 14, 44, 1, 0, time.UTC)
+	records := []MessageRecord{
+		{GithubID: "wf:29648492855:attempt:3", FeishuMessageID: "future-attempt", UpdatedAt: now},
+		{GithubID: "wf:29648492855", FeishuMessageID: "stale-attempt", UpdatedAt: now.Add(-16 * time.Minute)},
+		{GithubID: "wf:other", FeishuMessageID: "other-run", UpdatedAt: now},
+	}
+
+	if got := selectWorkflowRunRecordForJob(records, "wf:29648492855", 2, now); got != nil {
+		t.Fatalf("selected record = %#v, want nil", got)
+	}
+}
+
 func TestWorkflowRunRerunNoticeUsesAttemptMetadata(t *testing.T) {
 	payload := map[string]any{
 		"workflow_run": map[string]any{
