@@ -596,3 +596,10 @@ func TestShouldUpdateWithinMergeWindow(t *testing.T) {
 	assert.False(t, shouldUpdateWithinMergeWindow("push", false))
 	assert.False(t, shouldUpdateWithinMergeWindow("workflow_run", true))
 }
+
+func TestIsMessageUpdateExpired(t *testing.T) {
+	assert.False(t, isMessageUpdateExpired(nil))
+	assert.True(t, isMessageUpdateExpired(fmt.Errorf("update message failed code=230031")))
+	assert.True(t, isMessageUpdateExpired(fmt.Errorf("message has EXPIRED")))
+	assert.False(t, isMessageUpdateExpired(fmt.Errorf("temporary network failure")))
+}

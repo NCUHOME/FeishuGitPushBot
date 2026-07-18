@@ -236,6 +236,9 @@ func tryMergeWithExisting(
 	buildCancel()
 
 	if err := UpdateMessage(record.FeishuMessageID, card); err != nil {
+		if isMessageUpdateExpired(err) {
+			return false, nil
+		}
 		return true, fmt.Errorf("failed to update message: %w", err)
 	}
 
@@ -284,6 +287,14 @@ func shouldUpdateWithinMergeWindow(eventType string, isCIEvent bool) bool {
 		eventType != "pull_request_review_comment" &&
 		eventType != "member" &&
 		!isCIEvent
+}
+
+func isMessageUpdateExpired(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "230031") || strings.Contains(message, "expired")
 }
 
 // extractCIStatus 从 CI 事件负载中提取 status 和 conclusion
@@ -2302,7 +2313,7 @@ func refreshOneImage(record MessageRecord) {
 		slog.Error("Image refresh: failed to update message card",
 			"message_id", record.FeishuMessageID, "error", err)
 		// 飞书消息超过 14 天不可更新，标记为完成避免无限重试
-		if strings.Contains(err.Error(), "230031") || strings.Contains(err.Error(), "expired") {
+		if isMessageUpdateExpired(err) {
 			_, _ = DB.NewUpdate().Model(&record).Set("image_status = ?", "done").WherePK().Exec(context.Background())
 		}
 		return
