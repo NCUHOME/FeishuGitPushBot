@@ -275,11 +275,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 			d.Text = fmt.Sprintf("%s\n\nLabel: `%s`", pr.GetTitle(), label)
 		} else {
 			text, foldable := ProcessGithubMarkdown(pr.GetBody())
-			// 如果内容过长 (比如超过 800 字)，则放入 ExtraReply
-			if len(text) > 30000 {
-				d.Text = fmt.Sprintf("%s\n*(Content too long, see reply)*", pr.GetTitle())
-				d.ExtraReply = text
-			} else if text != "" {
+			if text != "" {
 				d.Text = fmt.Sprintf("%s\n%s", pr.GetTitle(), text)
 			} else {
 				d.Text = pr.GetTitle()
@@ -357,10 +353,7 @@ func ParseEvent(event any, eventType string) EventDetail {
 
 		commentBody, foldable := ProcessGithubMarkdown(body)
 		d.FoldableBody = foldable
-		if len(commentBody) > 10000 {
-			d.Text = fmt.Sprintf("**%s**\n*(Comment too long, see reply)*", iss.GetTitle())
-			d.ExtraReply = commentBody
-		} else if commentBody != "" {
+		if commentBody != "" {
 			d.Text = fmt.Sprintf("**%s**\n%s", iss.GetTitle(), commentBody)
 		} else {
 			d.Text = fmt.Sprintf("**%s**", iss.GetTitle())
@@ -1718,45 +1711,64 @@ func splitPushTextGroups(text string) []string {
 	return groups
 }
 
-// pushVisibleCommits 折叠前直接展示的 commit 条数；commit 数达到该值才折叠其余条目（少量提交无需折叠）
+// pushVisibleCommits 折叠前直接展示的 commit 条数。
 const pushVisibleCommits = 5
 
-func addPushMarkdown(card *Card, detail EventDetail) {
-	addGroup := func(text string) {
-		commits := splitCommits(text)
-		if len(commits) >= pushVisibleCommits {
-			visible := strings.Join(commits[:pushVisibleCommits], "<br>")
-			remaining := strings.Join(commits[pushVisibleCommits:], "<br>")
-			card.AddMarkdown(visible)
-			card.AddCollapsiblePanel(fmt.Sprintf("📝 展开查看其余 %d 条提交", len(commits)-pushVisibleCommits), remaining)
-			return
-		}
-		card.AddMarkdown(text)
-	}
+const pushMinFoldedCommits = 5
 
+func addPushMarkdown(card *Card, detail EventDetail) {
 	groups := splitPushTextGroups(detail.Text)
-	if len(groups) > 1 {
-		for i, group := range groups {
-			if i > 0 {
-				card.AddDivider()
-			}
-			addGroup(group)
+	commitsByGroup := make([][]string, 0, len(groups))
+	totalCommits := 0
+	for _, group := range groups {
+		commits := splitCommits(group)
+		if len(commits) > 0 {
+			commitsByGroup = append(commitsByGroup, commits)
+			totalCommits += len(commits)
 		}
+	}
+	if totalCommits == 0 {
+		card.AddMarkdown(detail.Text)
 		return
 	}
 
-	commitCount := detail.CommitCount
-	if commitCount == 0 {
-		commitCount = detail.EventCount
-	}
-	if commitCount >= pushVisibleCommits {
-		commits := splitCommits(detail.Text)
-		if len(commits) >= pushVisibleCommits {
-			addGroup(detail.Text)
-			return
+	renderGroups := func(groupCommits [][]string) {
+		rendered := 0
+		for _, commits := range groupCommits {
+			if len(commits) == 0 {
+				continue
+			}
+			if rendered > 0 {
+				card.AddDivider()
+			}
+			card.AddMarkdown(strings.Join(commits, "<br>"))
+			rendered++
 		}
 	}
-	card.AddMarkdown(detail.Text)
+
+	if totalCommits >= pushVisibleCommits+pushMinFoldedCommits {
+		visibleGroups := make([][]string, len(commitsByGroup))
+		foldedGroups := make([]string, 0, len(commitsByGroup))
+		visibleRemaining := pushVisibleCommits
+		for i, commits := range commitsByGroup {
+			visibleCount := min(visibleRemaining, len(commits))
+			if visibleCount > 0 {
+				visibleGroups[i] = commits[:visibleCount]
+				visibleRemaining -= visibleCount
+			}
+			if visibleCount < len(commits) {
+				foldedGroups = append(foldedGroups, strings.Join(commits[visibleCount:], "<br>"))
+			}
+		}
+		renderGroups(visibleGroups)
+		card.AddCollapsiblePanel(
+			fmt.Sprintf("📝 展开查看其余 %d 条提交", totalCommits-pushVisibleCommits),
+			strings.Join(foldedGroups, "<br>---<br>"),
+		)
+		return
+	}
+
+	renderGroups(commitsByGroup)
 }
 
 // titleCase 将字符串首字母大写（替代已废弃的 strings.Title）
@@ -2402,9 +2414,9 @@ func BuildCard(ctx context.Context, repo, sender, senderUrl, avatarUrl string, d
 			card.AddMarkdown(detail.Notice)
 		}
 
-		// --- 3. 可折叠的附加内容（PR body 中的 <details> 块等）---
+		// --- 3. 兼容旧记录中的附加内容，并应用统一折叠门槛 ---
 		if detail.FoldableBody != "" {
-			card.AddCollapsiblePanel("📝 展开查看详情", detail.FoldableBody)
+			card.AddMarkdown(detail.FoldableBody)
 		}
 
 		// --- 4. 操作按钮（V2 规范：必须放在 action 容器内）---
@@ -2523,9 +2535,8 @@ func extractRefName(line string) string {
 	return strings.TrimSpace(line)
 }
 
-// escapeCodeHTML 转义反引号代码块（行内 `code` 和围栏 ```code```）中的 < 和 >，
-// 防止飞书将代码块内的 <br> 等标签渲染为 HTML 而非显示为字面文本。
-// 代码块外部的 <br> 保持不变，确保飞书硬换行仍可正常工作。
+// escapeCodeHTML 保留行内和围栏代码块的反引号，并转义其中的 HTML 标签，
+// 防止代码里的 <br> 等内容被飞书当作标签解析。
 func escapeCodeHTML(s string) string {
 	var buf strings.Builder
 	i := 0
@@ -2822,7 +2833,8 @@ func convertBlockTags(s string) string {
 	return s
 }
 
-// ProcessGithubMarkdown 转换 GitHub Markdown 为飞书卡片 Markdown，并提取折叠内容
+// ProcessGithubMarkdown 转换 GitHub Markdown 为飞书卡片 Markdown。
+// GitHub 自带的 details 也先展开为普通内容，最终统一按 5+5 行门槛折叠。
 func ProcessGithubMarkdown(s string) (text string, foldable string) {
 	if s == "" {
 		return "", ""
@@ -2833,9 +2845,7 @@ func ProcessGithubMarkdown(s string) (text string, foldable string) {
 	s = normalizeMarkdownHeadings(s)
 	s = strings.ReplaceAll(s, "```mermaid", "```")
 
-	// 2. 提取 <details> <summary> 折叠内容
-	var foldables []string
-
+	// 2. 将 <details> <summary> 还原为普通 Markdown，交由卡片统一决定是否折叠。
 	processed := reDetails.ReplaceAllStringFunc(s, func(m string) string {
 		match := reDetails.FindStringSubmatch(m)
 		if len(match) > 2 {
@@ -2846,7 +2856,7 @@ func ProcessGithubMarkdown(s string) (text string, foldable string) {
 			content = htmlToMarkdown(content)
 			content = reMultiNewline.ReplaceAllString(content, "\n\n")
 
-			foldables = append(foldables, fmt.Sprintf("**%s**\n%s", title, strings.TrimSpace(content)))
+			return fmt.Sprintf("**%s**\n%s", title, strings.TrimSpace(content))
 		}
 		return ""
 	})
@@ -2857,9 +2867,7 @@ func ProcessGithubMarkdown(s string) (text string, foldable string) {
 
 	// 4. 安全截断
 	text = SafeText(processed, 50000)
-	foldable = SafeText(strings.Join(foldables, "\n\n"), 50000)
-
-	return text, foldable
+	return text, ""
 }
 
 type markdownLine struct {

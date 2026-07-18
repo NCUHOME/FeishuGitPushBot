@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -315,12 +316,215 @@ func (c *Card) AddDivider() {
 	})
 }
 
-// AddMarkdown 添加 Markdown 块
+const (
+	markdownVisibleLines   = 5
+	markdownMinFoldedLines = 5
+)
+
+type cardMarkdownLine struct {
+	text string
+	sep  string
+}
+
+func indexCardMarkdownHardBreak(content string) int {
+	limit := len(content)
+	if newline := strings.IndexByte(content, '\n'); newline >= 0 {
+		limit = newline
+	}
+
+	inCode := false
+	codeDelimiterLen := 0
+	for i := 0; i < limit; {
+		if content[i] == '\\' && i+1 < limit {
+			i += 2
+			continue
+		}
+		if content[i] == '`' {
+			runLen := 1
+			for i+runLen < limit && content[i+runLen] == '`' {
+				runLen++
+			}
+			if !inCode {
+				inCode = true
+				codeDelimiterLen = runLen
+			} else if runLen == codeDelimiterLen {
+				inCode = false
+				codeDelimiterLen = 0
+			}
+			i += runLen
+			continue
+		}
+		if !inCode && strings.HasPrefix(content[i:limit], "<br>") {
+			return i
+		}
+		i++
+	}
+	return -1
+}
+
+// splitCardMarkdown 按飞书实际使用的换行符拆分内容，同时保留硬换行标记。
+func splitCardMarkdown(content string) []cardMarkdownLine {
+	var lines []cardMarkdownLine
+	inFence := false
+	fenceMarker := ""
+	for len(content) > 0 {
+		newline := strings.IndexByte(content, '\n')
+		hardBreak := -1
+		if !inFence {
+			hardBreak = indexCardMarkdownHardBreak(content)
+		}
+
+		idx := newline
+		sep := "\n"
+		sepLen := 1
+		if idx < 0 || (hardBreak >= 0 && hardBreak < idx) {
+			idx = hardBreak
+			sep = "<br>"
+			sepLen = len(sep)
+		}
+		if idx < 0 {
+			lines = append(lines, cardMarkdownLine{text: content})
+			break
+		}
+
+		line := strings.TrimSuffix(content[:idx], "\r")
+		lines = append(lines, cardMarkdownLine{text: line, sep: sep})
+		if sep == "\n" {
+			_, marker, fence := cardMarkdownFence(line)
+			if fence {
+				if !inFence {
+					inFence = true
+					fenceMarker = marker
+				} else if strings.HasPrefix(strings.TrimSpace(line), fenceMarker) {
+					inFence = false
+					fenceMarker = ""
+				}
+			}
+		}
+		content = content[idx+sepLen:]
+	}
+	return lines
+}
+
+func cardMarkdownFence(line string) (opening, marker string, ok bool) {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) < 3 || (trimmed[0] != '`' && trimmed[0] != '~') {
+		return "", "", false
+	}
+	markerLen := 0
+	for markerLen < len(trimmed) && trimmed[markerLen] == trimmed[0] {
+		markerLen++
+	}
+	if markerLen < 3 {
+		return "", "", false
+	}
+	return trimmed, trimmed[:markerLen], true
+}
+
+func isEffectiveCardMarkdownLine(line string) bool {
+	if strings.TrimSpace(line) == "" {
+		return false
+	}
+	_, _, fence := cardMarkdownFence(line)
+	return !fence
+}
+
+func countCardMarkdownLines(lines []cardMarkdownLine) int {
+	count := 0
+	for _, line := range lines {
+		if isEffectiveCardMarkdownLine(line.text) {
+			count++
+		}
+	}
+	return count
+}
+
+func trimEmptyCardMarkdownLines(lines []cardMarkdownLine) []cardMarkdownLine {
+	for len(lines) > 0 && strings.TrimSpace(lines[0].text) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1].text) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+func joinCardMarkdownLines(lines []cardMarkdownLine) string {
+	var out strings.Builder
+	for i, line := range lines {
+		out.WriteString(line.text)
+		if i < len(lines)-1 {
+			out.WriteString(line.sep)
+		}
+	}
+	return out.String()
+}
+
+func activeCardMarkdownFence(lines []cardMarkdownLine) (opening, marker string, active bool) {
+	for _, line := range lines {
+		candidateOpening, candidateMarker, fence := cardMarkdownFence(line.text)
+		if !fence {
+			continue
+		}
+		if !active {
+			opening, marker, active = candidateOpening, candidateMarker, true
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(line.text), marker) {
+			opening, marker, active = "", "", false
+		}
+	}
+	return opening, marker, active
+}
+
+// splitMarkdownForCard 仅在外显和折叠部分都至少有 5 个有效行时折叠。
+func splitMarkdownForCard(content string) (visible, folded string, foldedLines int) {
+	lines := splitCardMarkdown(content)
+	if countCardMarkdownLines(lines) < markdownVisibleLines+markdownMinFoldedLines {
+		return content, "", 0
+	}
+
+	visibleLineCount := 0
+	cut := 0
+	for i, line := range lines {
+		if isEffectiveCardMarkdownLine(line.text) {
+			visibleLineCount++
+		}
+		if visibleLineCount == markdownVisibleLines {
+			cut = i + 1
+			break
+		}
+	}
+	if cut == 0 {
+		return content, "", 0
+	}
+
+	visiblePart := trimEmptyCardMarkdownLines(lines[:cut])
+	foldedPart := trimEmptyCardMarkdownLines(lines[cut:])
+	foldedLines = countCardMarkdownLines(foldedPart)
+	if foldedLines < markdownMinFoldedLines {
+		return content, "", 0
+	}
+
+	visible = joinCardMarkdownLines(visiblePart)
+	folded = joinCardMarkdownLines(foldedPart)
+	if opening, marker, active := activeCardMarkdownFence(visiblePart); active {
+		visible += "\n" + marker
+		folded = opening + "\n" + folded
+	}
+	return visible, folded, foldedLines
+}
+
+// AddMarkdown 添加 Markdown 块，超过统一行数门槛时自动折叠。
 func (c *Card) AddMarkdown(content string) {
+	visible, folded, foldedLines := splitMarkdownForCard(content)
 	c.Body.Elements = append(c.Body.Elements, map[string]any{
 		"tag":     "markdown",
-		"content": escapeCodeHTML(content),
+		"content": escapeCodeHTML(visible),
 	})
+	if folded != "" {
+		c.AddCollapsiblePanel(fmt.Sprintf("📝 展开查看其余 %d 行", foldedLines), folded)
+	}
 }
 
 // AddMarkdownWithSize 添加指定字号的 Markdown 块

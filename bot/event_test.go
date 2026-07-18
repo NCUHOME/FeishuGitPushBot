@@ -1186,6 +1186,68 @@ func TestProcessGithubMarkdownDowngradesHTMLHeadingsWithAttributes(t *testing.T)
 	}
 }
 
+func TestProcessGithubMarkdownDetailsUseUnifiedCardFold(t *testing.T) {
+	input := "before 1\nbefore 2\nbefore 3\nbefore 4\nbefore 5\n<details><summary>More</summary>inside 1\ninside 2\ninside 3\ninside 4\ninside 5</details>"
+	text, foldable := ProcessGithubMarkdown(input)
+
+	if foldable != "" {
+		t.Fatalf("details content should not bypass the unified card fold: %q", foldable)
+	}
+	if !strings.Contains(text, "**More**\ninside 1") {
+		t.Fatalf("details content was not restored to the main markdown: %q", text)
+	}
+
+	card := NewCard()
+	card.AddMarkdown(text)
+	if len(card.Body.Elements) != 2 {
+		t.Fatalf("ten content lines should create one visible block and one fold: %#v", card.Body.Elements)
+	}
+	panel, ok := card.Body.Elements[1].(map[string]any)
+	if !ok || panel["tag"] != "collapsible_panel" {
+		t.Fatalf("expected collapsible panel, got %#v", card.Body.Elements[1])
+	}
+}
+
+func TestIssueEditedBuildsLatestBodyForOriginalCardUpdate(t *testing.T) {
+	body := strings.Join([]string{
+		"section 1",
+		"use `season_id`",
+		"section 3",
+		"section 4",
+		"section 5",
+		"section 6",
+		"section 7",
+		"section 8",
+		"section 9",
+	}, "\n")
+	detail := ParseEvent(&github.IssuesEvent{
+		Action: strPtr("edited"),
+		Issue: &github.Issue{
+			Number:    intPtr(36),
+			Title:     strPtr("Season migration"),
+			Body:      strPtr(body),
+			HTMLURL:   strPtr("https://github.com/NCUHOME/Hr2026Be/issues/36"),
+			CreatedAt: &github.Timestamp{Time: time.Now()},
+		},
+	}, "issues")
+
+	if detail.Title != "🍄 Issue edited" || detail.Action != "edited" {
+		t.Fatalf("unexpected edited Issue detail: %#v", detail)
+	}
+	if !strings.Contains(detail.Text, "section 9") {
+		t.Fatalf("edited Issue should carry the complete latest body: %q", detail.Text)
+	}
+
+	card := BuildCard(context.Background(), "NCUHOME/Hr2026Be", "editor", "https://github.com/editor", "", detail)
+	cardJSON := card.String()
+	if !strings.Contains(cardJSON, `"tag":"collapsible_panel"`) {
+		t.Fatalf("Issue title plus nine body lines should meet the 5+5 fold threshold: %s", cardJSON)
+	}
+	if !strings.Contains(cardJSON, "`season_id`") {
+		t.Fatalf("inline code should preserve its backtick styling: %s", cardJSON)
+	}
+}
+
 func TestWorkflowRunAttemptHelpers(t *testing.T) {
 	payload := map[string]any{
 		"workflow_run": map[string]any{
