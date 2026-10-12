@@ -54,7 +54,7 @@ func GetImageKey(ctx context.Context, url string) string {
 func syncUploadImage(ctx context.Context, url string) string {
 	// 1. 下载图片 (使用传入的 ctx，受限时控制)
 	imageRes, err := httpClient.R().SetContext(ctx).Get(url)
-	if err != nil || imageRes == nil || imageRes.IsError() {
+	if err != nil || imageRes == nil || imageRes.IsStatusFailure() {
 		return ""
 	}
 	defer imageRes.Body.Close()
@@ -89,7 +89,7 @@ func syncUploadImage(ctx context.Context, url string) string {
 		uploadCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		resp, err = client.Im.Image.Create(uploadCtx, larkim.NewCreateImageReqBuilder().
 			Body(larkim.NewCreateImageReqBodyBuilder().
-				ImageType(larkim.ImageTypeMessage).
+				ImageType(larkim.CreateImageImageTypeMessage).
 				Image(bytes.NewReader(imgData)).
 				Build()).
 			Build())
@@ -219,7 +219,7 @@ func sendMessage(chatID, parentID string, card *Card) (string, error) {
 	for i := 0; i < 3; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		resp, err = client.Im.Message.Create(ctx, larkim.NewCreateMessageReqBuilder().
-			ReceiveIdType(larkim.ReceiveIdTypeChatId).
+			ReceiveIdType(larkim.CreateMessageV1ReceiveIDTypeChatId).
 			Body(larkim.NewCreateMessageReqBodyBuilder().
 				ReceiveId(chatID).
 				MsgType(larkim.MsgTypeInteractive).

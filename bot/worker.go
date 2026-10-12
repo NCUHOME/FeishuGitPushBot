@@ -171,13 +171,14 @@ func getThreadReplyWindow() time.Duration {
 }
 
 // mergeSearch 定义查找已有消息记录的搜索条件
-// githubID / githubIDLike / githubIDLikes 为 OR 关系，eventType / withinWindow / recordType 为 AND 关系
+// githubID / githubIDLike / githubIDLikes 为 OR 关系，eventType / withinWindow / recordType / repoName 为 AND 关系
 type mergeSearch struct {
 	githubID      string   // github_id 精确匹配
 	githubIDLike  string   // github_id LIKE 模式匹配（单个）
 	githubIDLikes []string // github_id LIKE 模式匹配（多个，OR 关系）
 	eventType     string   // event_type 精确匹配（空值表示不筛选）
 	recordType    string   // record_type 精确匹配（空值表示不筛选）
+	repoName      string   // repo_name 精确匹配（空值表示不筛选），LIKE 模式含下划线时防止跨仓库误匹配
 	withinWindow  bool     // 是否应用合并窗口时间过滤
 }
 
@@ -222,6 +223,9 @@ func tryMergeWithExisting(
 	}
 	if search.recordType != "" {
 		q = q.Where("record_type = ?", search.recordType)
+	}
+	if search.repoName != "" {
+		q = q.Where("repo_name = ?", search.repoName)
 	}
 	if search.withinWindow {
 		q = q.Where("updated_at > ?", time.Now().Add(-getMergeWindow()))
@@ -1795,11 +1799,12 @@ func processWebhookEvent(event WebhookEvent) error {
 		}
 	}
 
-	// 4.3 分支推送合并：同一分支在合并窗口内的连续推送合并为一条（排除分支删除）
+	// 4.3 分支推送合并：同一分支在合并窗口内的连续推送合并为一条（排除分支删除；
+	// 限定 normal 记录，避免删除后同名重建的推送并进删除卡片）
 	if event.EventType == "push" && githubID != "" && !detail.IsTag && !detail.IsDeleted && detail.Text != "" {
 		detail.EventCount = len(strings.Split(detail.Text, "\n"))
 		merged, err := tryMergeWithExisting(ctx,
-			mergeSearch{githubID: githubID, withinWindow: true},
+			mergeSearch{githubID: githubID, recordType: "normal", withinWindow: true},
 			func(old, new *EventDetail) {
 				new.Text = old.Text + "\n---\n" + new.Text
 				new.Title = "🍏 Branch Push"
@@ -1833,6 +1838,7 @@ func processWebhookEvent(event WebhookEvent) error {
 					fmt.Sprintf("delete:%s:branch:%%", repo),
 				},
 				recordType:   "deleted",
+				repoName:     repo,
 				withinWindow: true,
 			},
 			func(old, new *EventDetail) {
@@ -1865,6 +1871,7 @@ func processWebhookEvent(event WebhookEvent) error {
 					fmt.Sprintf("delete:%s:tag:%%", repo),
 				},
 				recordType:   "deleted",
+				repoName:     repo,
 				withinWindow: true,
 			},
 			func(old, new *EventDetail) {
@@ -1897,6 +1904,7 @@ func processWebhookEvent(event WebhookEvent) error {
 					fmt.Sprintf("push:%s:refs/heads/%%", repo),
 				},
 				recordType:   "deleted",
+				repoName:     repo,
 				withinWindow: true,
 			},
 			func(old, new *EventDetail) {
@@ -1923,7 +1931,7 @@ func processWebhookEvent(event WebhookEvent) error {
 	// 4.5 标签创建合并：同一仓库在合并窗口内的标签创建合并
 	if event.EventType == "create" && detail.IsTag {
 		merged, err := tryMergeWithExisting(ctx,
-			mergeSearch{githubIDLike: fmt.Sprintf("create:%s:tag:%%", repo), withinWindow: true},
+			mergeSearch{githubIDLike: fmt.Sprintf("create:%s:tag:%%", repo), repoName: repo, withinWindow: true},
 			func(old, new *EventDetail) {
 				if old.Text != "" {
 					new.Text = old.Text + "\n---\n" + new.Text
@@ -2226,6 +2234,7 @@ func processWebhookEvent(event WebhookEvent) error {
 			Set("event_id = EXCLUDED.event_id").
 			Set("updated_at = NOW()").
 			Set("head_sha = EXCLUDED.head_sha").
+			Set("record_type = EXCLUDED.record_type").
 			Exec(ctx)
 		if insertErr != nil {
 			slog.Error("Failed to insert/update message record", "github_id", githubID, "error", insertErr)
