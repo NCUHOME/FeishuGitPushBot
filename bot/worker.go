@@ -2226,6 +2226,7 @@ func processWebhookEvent(event WebhookEvent) error {
 			Set("event_id = EXCLUDED.event_id").
 			Set("updated_at = NOW()").
 			Set("head_sha = EXCLUDED.head_sha").
+			Set("record_type = EXCLUDED.record_type").
 			Exec(ctx)
 		if insertErr != nil {
 			slog.Error("Failed to insert/update message record", "github_id", githubID, "error", insertErr)
